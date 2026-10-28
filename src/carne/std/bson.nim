@@ -32,9 +32,9 @@ proc opaqueToBytes(s: string): string =
   var i = 0
   while i < s.len:
     let b = ord(s[i])
-    if (b == 0xC4 or b == 0xC5) and i + 1 < s.len and
+    if b >= 0xC4 and b <= 0xC7 and i + 1 < s.len and
         (ord(s[i + 1]) and 0xC0) == 0x80:
-      result.add(chr(((b and 0x01) shl 6) or (ord(s[i + 1]) and 0x3F)))
+      result.add(chr(((b and 0x03) shl 6) or (ord(s[i + 1]) and 0x3F)))
       i += 2
     else:
       raise newException(CatchableError,

@@ -17,8 +17,14 @@ init proc(module: Module) =
   there is a compile error. Bare setup statements under `init` pass
   through with `module` substituted.
 - `module.registerFn` defines (nested `cdecl`, proven legal) AND attaches.
-  `ctx.registerFn` stays define-only for special cases (unused right now;
-  timers stays fully manual: globals + `setupEx` + shared helper).
+  `ctx.registerFn` is define-only for sub-namespace wiring (first used by
+  `std/sql`: callbacks defined as setup statements, attached with
+  `setProp` to child objects created via `newObject`). Setup has no
+  `setupEx` in scope, so wiring passes `nil` (plain-object sets cannot
+  throw). Shared Nim helpers (`doParse`/`doValidate`) take an explicit
+  `name` and build their own `usage` lines, since `##` collection only
+  reaches calls inside the callback body itself. Timers stays fully
+  manual: globals + `setupEx` + shared helper.
 - `module.property` attaches data: `propToJS` overloads for
   string/int/int64/float/bool/JsonNode; anything else fails at the line.
 - Leading `##` in a member body is collected and appended to that
@@ -49,6 +55,6 @@ init proc(module: Module) =
   Guard message hints at shadowing.
 
 ## Verification
-- 17/17 suites pass; error output verified to carry usage lines, e.g.
+- 18/18 suites pass; error output verified to carry usage lines, e.g.
   `readFile: cannot open: /no/such/file` + `fs.readFile(path) -> ...`.
 - Only `test_manifest`/`test_require` assert message text (non-DSL).

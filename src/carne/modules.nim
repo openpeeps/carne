@@ -21,6 +21,7 @@ import ./std/vcard
 import ./std/feed
 import ./std/csv
 import ./std/xml
+import ./std/sql
 
 type
   Installer* = proc(ctx: JSContextRef; rt: Runtime): JSObjectRef
@@ -38,6 +39,7 @@ let installers* = {
   "std/feed": Installer(feed.install),
   "std/csv": Installer(csv.install),
   "std/xml": Installer(xml.install),
+  "std/sql": Installer(sql.install),
 }.toTable
 
 proc requireImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
