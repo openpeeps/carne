@@ -31,6 +31,7 @@ import ./std/gettext
 import ./std/regex
 import ./std/qr
 import ./std/svg
+import ./std/http
 
 type
   Installer* = proc(ctx: JSContextRef; rt: Runtime): JSObjectRef
@@ -58,6 +59,7 @@ let installers* = {
   "std/regex": Installer(regex.install),
   "std/qr": Installer(qr.install),
   "std/svg": Installer(svg.install),
+  "std/http": Installer(http.install),
 }.toTable
 
 proc requireImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;

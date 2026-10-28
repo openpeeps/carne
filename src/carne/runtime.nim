@@ -14,6 +14,7 @@ import powpow/loop
 import ./bridge
 import ./modules
 import ./std/timers
+import ./std/http
 
 export bridge
 
@@ -36,6 +37,57 @@ proc consoleLogImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
       parts.add(text)
   echo parts.join(" ")
   JSValueMakeUndefined(ctx)
+
+proc decPending(rt: Runtime) =
+  dec rt.pending
+  if rt.pending <= 0 and not rt.exitRequested:
+    rt.pending = 0
+    rt.loop.stop()
+
+proc topResolveImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
+    argumentCount: csize_t; arguments: ptr JSValueRef;
+    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
+  ## Settle-capture for a top-level completion promise (fulfilled).
+  let rt = currentRt()
+  if rt != nil:
+    if int(argumentCount) > 0 and arguments != nil:
+      let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
+      rt.promiseText = valueToString(ctx, args[0])
+    else:
+      rt.promiseText = ""
+    rt.promiseSettled = true
+    rt.promiseRejected = false
+  JSValueMakeUndefined(ctx)
+
+proc topRejectImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
+    argumentCount: csize_t; arguments: ptr JSValueRef;
+    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
+  ## Settle-capture for a top-level completion promise (rejected).
+  let rt = currentRt()
+  if rt != nil:
+    if int(argumentCount) > 0 and arguments != nil:
+      let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
+      rt.promiseText = valueToString(ctx, args[0])
+    else:
+      rt.promiseText = ""
+    rt.promiseSettled = true
+    rt.promiseRejected = true
+  JSValueMakeUndefined(ctx)
+
+proc thenFnOf(ctx: JSContextRef; v: JSValueRef): JSObjectRef =
+  ## Returns v's `then` when v is an object with a callable `then`
+  ## (Promise or thenable), else nil. Never throws.
+  if v == nil or not JSValueIsObject(ctx, v):
+    return nil
+  var ex: JSValueRef = nil
+  let key = newJSString("then")
+  defer: JSStringRelease(key)
+  let prop = JSObjectGetProperty(ctx, v, key, addr ex)
+  if ex != nil or prop == nil:
+    return nil
+  if not JSObjectIsFunction(ctx, prop):
+    return nil
+  prop
 
 proc installConsole(ctx: JSContextRef; setupEx: ptr JSValueRef) =
   ## Installs global `console.log` and a `print` alias.
@@ -90,15 +142,46 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
       if ex != nil:
         raise newException(CarneError, valueToString(ctx, ex))
       var completion = ""
+      var awaited: JSValueRef = nil
       if res != nil and not JSValueIsUndefined(ctx, res):
-        completion = valueToString(ctx, res)
+        let thenFn = thenFnOf(ctx, res)
+        if thenFn != nil:
+          # Completion is a Promise/thenable (e.g. an async IIFE):
+          # capture its settlement after the drain below. The async
+          # work it awaits already holds pending slots of its own.
+          rt.promiseSettled = false
+          rt.promiseRejected = false
+          rt.promiseText = ""
+          JSValueProtect(ctx, res)
+          awaited = res
+          var attachEx: JSValueRef = nil
+          var fns: array[2, JSValueRef]
+          fns[0] = makeFunction(ctx, "resolve", topResolveImpl)
+          fns[1] = makeFunction(ctx, "reject", topRejectImpl)
+          discard JSObjectCallAsFunction(ctx, thenFn, res, 2,
+            addr fns[0], addr attachEx)
+          if attachEx != nil:
+            JSValueUnprotect(ctx, res)
+            awaited = nil
+            completion = valueToString(ctx, res)
+        else:
+          completion = valueToString(ctx, res)
       if not rt.exitRequested and rt.pending > 0:
         loop.run()
+      if awaited != nil:
+        JSValueUnprotect(ctx, awaited)
+        if rt.promiseSettled and rt.promiseRejected:
+          raise newException(CarneError, rt.promiseText)
+        elif rt.promiseSettled:
+          completion = rt.promiseText
+        else:
+          completion = valueToString(ctx, awaited)
       if rt.uncaught.len > 0:
         raise newException(CarneError, rt.uncaught)
       return (completion, rt.exitCode)
     finally:
       setCurrentRt(nil)
+      closeAllServers()
       loop.close()
 
 proc runCode*(code: string; sourceURL = "script.js";

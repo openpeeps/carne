@@ -36,6 +36,9 @@ type
     instances*: Table[string, JSObjectRef]
     timerSeq*: int
     timers*: Table[int, TimerEntry]
+    promiseSettled*: bool
+    promiseRejected*: bool
+    promiseText*: string
 
 var rtThread {.threadvar.}: Runtime
 

@@ -49,9 +49,22 @@ init proc(module: Module) =
   outside-in, so `init` consumes the raw node first).
 - No closures over callback bindings: `substBody` copies nested routine
   defs (incl. `nnkLambda`) verbatim while declarations become gensyms,
-  so a lambda capturing `ctx`/locals breaks. Share via top-level procs
-  with explicit params instead (`std/gettext` inlines its MemFile
-  open/close per member for this reason).
+  so a lambda naming `ctx`/`args`/etc. breaks. Alias bindings to plain
+  locals first (`let c = ctx`) and capture those; never capture `args`
+  (dangling post-call) — copy values out. `std/http` per-fetch settle
+  closures work this way (top-level `startFetch` + nested closures over
+  its own params/locals).
+- Async std modules hold `inc rt.pending` per live unit (fetch, server)
+  and settle via `JSObjectMakeDeferredPromise` + `JSObjectCallAsFunction`
+  on resolve/reject; protect all three values until settle. `runCodeEx`
+  unwraps one top-level completion thenable (attach, drain, read
+  `promiseText` / raise `CarneError`); floating promises settle through
+  normal microtask checkpoints, no extra plumbing.
+- `{.gcsafe.}` server dispatch: `OnRequestCallback` cannot capture, so
+  look the JS handler up in a module-global table keyed by
+  `cast[pointer](res.server)` inside one `{.cast(gcsafe).}` block
+  (single thread in practice). Per-run client pools live in a second
+  table freed by `closeAllServers` from the runtime teardown.
 
 ## Gotcha: `init` vs powpow
 - `powpow/loop` re-exports `init` (`Platform.init`), which beats the macro

@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://github.com/openpeeps/carne/blob/main/.github/carne_logo.png" alt="CarneJS Logo" width="140px" height="140px"><br>
-  OpenPeeps repository template for developing libraries,<br>projects and other cool things. 👑 Written in Nim language
+  Carne, a JavaScript runtime  👑 Written in Nim language
 </p>
 
 <p align="center">
@@ -13,9 +13,8 @@
 </p>
 
 ## 😍 Key Features
-- Open Source | `MIT` License
-- Written in Nim language
-- macOS JavaScript runtime on the system JavaScriptCore
+- JavaScript runtime powered by JavaScriptCore
+- Powerful Standard Library
 - Bun/Node-like CLI: `carne run script.js` (or bare `carne script.js`)
 - `console.log`, `process.argv`, global `require("std/...")`
 - Timers (`setTimeout`, `setInterval`, ...) on the powpow event loop
@@ -23,7 +22,35 @@
 - std libs: `env fs timers` + formats (`yaml toml ical dotenv plist bson csv xml vcard feed`)
 - `sql` (sqlite/postgres/mysql AST + validate), `crypto` (hash/aead/sign/argon2id)
 - `path colors css diff gettext regex qr svg`
+- `http` (async fetch/get/post + serve on the shared powpow loop)
 - `init`/`exportObject`/`registerFn` DSL for authoring std modules
+- Written in Nim language
+- Open Source | `MIT` License
+
+### Usage
+
+```
+A JavaScript runtime in Nim
+  (c) OpenPeeps | MIT License
+  Build Version: 0.1.0
+
+usage: carne <command> [args] [options]
+
+Scripting
+  run <script.js> [args]  run a .js file
+
+Packages
+  pkg install <spec>      install a package by name, git URL (--url=... pins a source URL)
+  pkg remove <name> [ver] uninstall a package (one version, or all)
+  pkg update [name]       update one package, or all when omitted
+  pkg list                list installed packages
+  pkg develop <path>      editable install from a local directory
+  pkg prune               remove orphaned packages
+  pkg refresh             re-download registry data
+
+  -h, --help              show this help
+  --version               show version
+```
 
 ## Roadmap
 - [x] JSC runtime: console/process/require/timers CLI
@@ -31,7 +58,9 @@
 - [x] Format std libs (yaml, toml, ical, dotenv, plist, bson, csv, xml, vcard, feed)
 - [x] `std/sql`, `std/crypto`, `std/path`, `std/colors`
 - [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/qr`, `std/svg`
+- [x] `std/http` (async client + server) + top-level promise unwrap in `runCode`
 - [x] Benchmark suite + results
+- [ ] Top-level await in scripts (currently needs an async IIFE)
 - [ ] `std/crypto`: X25519 exchange, RSA/ECDSA, AES-GCM
 - [ ] `std/gettext`: `.mo` support; `std/qr`: decode; `std/svg`: stringify
 - [ ] `exportClass` in the module DSL
