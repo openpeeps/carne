@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/openpeeps/carne/blob/main/.github/carne_logo.png" width="140px"><br>
+  <img src="https://github.com/openpeeps/carne/blob/main/.github/carne_logo.png" alt="CarneJS Logo" width="140px" height="140px"><br>
   OpenPeeps repository template for developing libraries,<br>projects and other cool things. 👑 Written in Nim language
 </p>
 
