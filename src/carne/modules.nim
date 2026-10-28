@@ -22,6 +22,7 @@ import ./std/feed
 import ./std/csv
 import ./std/xml
 import ./std/sql
+import ./std/crypto
 
 type
   Installer* = proc(ctx: JSContextRef; rt: Runtime): JSObjectRef
@@ -40,6 +41,7 @@ let installers* = {
   "std/csv": Installer(csv.install),
   "std/xml": Installer(xml.install),
   "std/sql": Installer(sql.install),
+  "std/crypto": Installer(crypto.install),
 }.toTable
 
 proc requireImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
