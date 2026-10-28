@@ -14,16 +14,9 @@
 
 ## 😍 Key Features
 - JavaScript runtime powered by JavaScriptCore
-- Powerful Standard Library
-- Bun/Node-like CLI: `carne run script.js` (or bare `carne script.js`)
-- `console.log`, `process.argv`, global `require("std/...")`
-- Timers (`setTimeout`, `setInterval`, ...) on the powpow event loop
-- Packages via `carne pkg` (npm-spec `package.json`, datpkgr backend)
-- std libs: `env fs timers` + formats (`yaml toml ical dotenv plist bson csv xml vcard feed`)
-- `sql` (sqlite/postgres/mysql AST + validate), `crypto` (hash/aead/sign/argon2id)
-- `path colors css diff gettext regex qr svg`
-- `http` (async fetch/get/post + serve on the shared powpow loop)
-- `init`/`exportObject`/`registerFn` DSL for authoring std modules
+- Powerful Standard Library: `env`, `fs`, `crypto` (hash/aead/sign/argon2id), `http`, `path`
+- Reading/Writing various formats: `yaml`, `toml`, `csv`, `xml`, `vcard`, `feed`, `sql`, `colors` `css` `diff` `gettext` `regex` `qr` `svg`
+- Built-in package manager
 - Written in Nim language
 - Open Source | `MIT` License
 
@@ -59,6 +52,7 @@ Packages
 - [x] `std/sql`, `std/crypto`, `std/path`, `std/colors`
 - [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/qr`, `std/svg`
 - [x] `std/http` (async client + server) + top-level promise unwrap in `runCode`
+- [x] Lazy startup (deferred event loop, per-run TLS, cached spec data)
 - [x] Benchmark suite + results
 - [ ] Top-level await in scripts (currently needs an async IIFE)
 - [ ] `std/crypto`: X25519 exchange, RSA/ECDSA, AES-GCM

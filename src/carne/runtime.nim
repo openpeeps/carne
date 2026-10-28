@@ -38,12 +38,6 @@ proc consoleLogImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
   echo parts.join(" ")
   JSValueMakeUndefined(ctx)
 
-proc decPending(rt: Runtime) =
-  dec rt.pending
-  if rt.pending <= 0 and not rt.exitRequested:
-    rt.pending = 0
-    rt.loop.stop()
-
 proc topResolveImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
     argumentCount: csize_t; arguments: ptr JSValueRef;
     exception: ptr JSValueRef): JSValueRef {.cdecl.} =
@@ -83,7 +77,7 @@ proc thenFnOf(ctx: JSContextRef; v: JSValueRef): JSObjectRef =
   let key = newJSString("then")
   defer: JSStringRelease(key)
   let prop = JSObjectGetProperty(ctx, v, key, addr ex)
-  if ex != nil or prop == nil:
+  if ex != nil or prop == nil or not JSValueIsObject(ctx, prop):
     return nil
   if not JSObjectIsFunction(ctx, prop):
     return nil
@@ -119,9 +113,9 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
     argv: seq[string] = @[]): tuple[output: string, code: int] =
   ## Evaluates `code`, drains async work, returns the completion value
   ## ("" for undefined) and the process exit code. Raises CarneError on
-  ## JS exceptions (eval-time or uncaught async).
-  let loop = newLoop()
-  let rt = Runtime(ctx: nil, argv: argv, loop: loop, pending: 0,
+  ## JS exceptions (eval-time or uncaught async). The event loop is
+  ## created lazily: pure-sync scripts never pay for it.
+  let rt = Runtime(ctx: nil, argv: argv, loop: nil, pending: 0,
     exitRequested: false, exitCode: 0, uncaught: "",
     instances: initTable[string, JSObjectRef](), timerSeq: 0,
     timers: initTable[int, TimerEntry]())
@@ -166,8 +160,8 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
             completion = valueToString(ctx, res)
         else:
           completion = valueToString(ctx, res)
-      if not rt.exitRequested and rt.pending > 0:
-        loop.run()
+      if not rt.exitRequested and rt.pending > 0 and rt.loop != nil:
+        rt.loop.run()
       if awaited != nil:
         JSValueUnprotect(ctx, awaited)
         if rt.promiseSettled and rt.promiseRejected:
@@ -182,7 +176,8 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
     finally:
       setCurrentRt(nil)
       closeAllServers()
-      loop.close()
+      if rt.loop != nil:
+        rt.loop.close()
 
 proc runCode*(code: string; sourceURL = "script.js";
     argv: seq[string] = @[]): string =

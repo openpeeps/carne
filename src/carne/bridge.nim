@@ -49,6 +49,15 @@ proc currentRt*(): Runtime =
 proc setCurrentRt*(rt: Runtime) =
   rtThread = rt
 
+proc ensureLoop*(rt: Runtime): Loop =
+  ## Creates the run's powpow loop on first async need (timers, fetch,
+  ## serve) and returns it. Pure-sync scripts never pay for kqueue +
+  ## table preallocation. Every `inc rt.pending` site must go through
+  ## here first, so pending > 0 implies a live loop.
+  if rt.loop == nil:
+    rt.loop = newLoop()
+  rt.loop
+
 type
   CarneError* = object of CatchableError
 

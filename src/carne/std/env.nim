@@ -68,5 +68,6 @@ init proc(module: Module) =
       let rt = currentRt()
       rt.exitCode = int(code)
       rt.exitRequested = true
-      rt.loop.stop()
+      if rt.loop != nil:
+        rt.loop.stop()
       JSValueMakeUndefined(ctx)

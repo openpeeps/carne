@@ -127,17 +127,25 @@ proc parseOpts(node: JsonNode; name: string; allowMethod,
       raise newException(CatchableError,
         name & ": options.timeoutMs must be a number")
 
-proc clientFor(rt: Runtime): HttpClientBase =
+proc clientFor(rt: Runtime; needTls: bool): HttpClientBase =
   ## One shared client (pool + TLS context) per run. Freed by
-  ## closeAllServers in the runtime teardown.
+  ## closeAllServers in the runtime teardown. The TLS context is only
+  ## created for https URLs: plain-http runs never pay OpenSSL init.
   let key = cast[pointer](rt)
   if httpClients.hasKey(key):
-    return httpClients[key]
+    result = httpClients[key]
+    if needTls and result.tlsCtx == nil:
+      try:
+        result.tlsCtx = newClientTlsContext()
+      except CatchableError:
+        discard
+    return result
   var tlsCtx: SslContext = nil
-  try:
-    tlsCtx = newClientTlsContext()
-  except CatchableError:
-    tlsCtx = nil
+  if needTls:
+    try:
+      tlsCtx = newClientTlsContext()
+    except CatchableError:
+      tlsCtx = nil
   result = HttpClientBase(tlsCtx: tlsCtx, keepAlive: true, timeoutMs: 0,
     maxBodySize: DefaultMaxResponseBody, defaultHeaders: @[],
     pool: newHttpConnPool())
@@ -231,13 +239,15 @@ proc startFetch(ctx: JSContextRef; rt: Runtime; url: string; opts: FetchOpts;
   let cTimeout = opts.timeoutMs
   let cBody = opts.body
   try:
-    let client = clientFor(rt)
+    let needTls = url.strip().toLowerAscii().startsWith("https:")
+    let client = clientFor(rt, needTls)
+    let loop = rt.ensureLoop()
     if cBody.len > 0:
-      discard requestImpl(client, rt.loop, cMeth, url,
+      discard requestImpl(client, loop, cMeth, url,
         cBody.toOpenArrayByte(0, cBody.high), cHeaders, "", cTimeout,
         onResponse = settleOk, onBodyData = nil, onError = settleErr)
     else:
-      discard requestImpl(client, rt.loop, cMeth, url,
+      discard requestImpl(client, loop, cMeth, url,
         [], cHeaders, "", cTimeout,
         onResponse = settleOk, onBodyData = nil, onError = settleErr)
   except CatchableError as e:
@@ -444,7 +454,7 @@ init proc(module: Module) =
         throwError(ctx, "serve: handler is not a function", exception)
         return nil
       let rt = currentRt()
-      var server = newHttpServer(rt.loop)
+      var server = newHttpServer(rt.ensureLoop(), populate = false)
       server.handler = httpOnRequest
       try:
         server.listen(host, port)

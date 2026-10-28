@@ -80,12 +80,13 @@ proc scheduleTimer(ctx: JSContextRef; function: JSObjectRef;
     JSValueProtect(ctx, v)
   inc rt.timerSeq
   let jsId = rt.timerSeq
+  let loop = rt.ensureLoop()
   inc rt.pending
   let timerId =
     if isInterval:
-      rt.loop.addInterval(delayMs, proc(id: int) = fireTimer(rt, jsId))
+      loop.addInterval(delayMs, proc(id: int) = fireTimer(rt, jsId))
     else:
-      rt.loop.addTimer(delayMs, proc(id: int) = fireTimer(rt, jsId))
+      loop.addTimer(delayMs, proc(id: int) = fireTimer(rt, jsId))
   rt.timers[jsId] = TimerEntry(id: timerId, fn: fn, rest: rest,
     isInterval: isInterval)
   toJS(ctx, jsId)
@@ -115,7 +116,7 @@ proc clearTimerImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
       let jsId = int(idNum)
       if rt.timers.hasKey(jsId):
         let entry = rt.timers[jsId]
-        rt.loop.cancelTimer(entry.id)
+        rt.ensureLoop().cancelTimer(entry.id)
         rt.timers.del(jsId)
         releaseTimer(rt, entry)
         decPending(rt)
