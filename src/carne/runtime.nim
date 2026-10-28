@@ -6,6 +6,9 @@
 
 import std/strutils
 import std/tables
+import std/monotimes
+import std/times
+import std/os
 
 import javascriptcore
 
@@ -109,6 +112,14 @@ proc installProcess(ctx: JSContextRef; argv: seq[string];
   setProp(ctx, processObj, "argv", arr, setupEx)
   setProp(ctx, global, "process", processObj, setupEx)
 
+proc mark(prof: bool; pt: var MonoTime; phase: string) =
+  ## CARNE_PROFILE phase timer (dev aid, zero cost when off).
+  if prof:
+    let now = getMonoTime()
+    stderr.writeLine("carne-prof " & phase & "=" &
+      $(inNanoseconds(now - pt) div 1000) & "us")
+    pt = now
+
 proc runCodeEx*(code: string; sourceURL = "script.js";
     argv: seq[string] = @[]): tuple[output: string, code: int] =
   ## Evaluates `code`, drains async work, returns the completion value
@@ -122,17 +133,22 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
   withGlobalContext(ctx):
     rt.ctx = ctx
     setCurrentRt(rt)
+    let prof = getEnv("CARNE_PROFILE") != ""
+    var pt = getMonoTime()
     try:
       var setupEx: JSValueRef = nil
+      mark(prof, pt, "ctx")
       installConsole(ctx, addr setupEx)
       installProcess(ctx, argv, addr setupEx)
       installRequire(rt, addr setupEx)
       installTimers(rt, addr setupEx)
+      mark(prof, pt, "install")
       if setupEx != nil:
         raise newException(CarneError,
           "failed to initialize runtime: " & valueToString(ctx, setupEx))
       var ex: JSValueRef = nil
       let res = evalScript(ctx, code, sourceURL = sourceURL, exception = ex)
+      mark(prof, pt, "eval")
       if ex != nil:
         raise newException(CarneError, valueToString(ctx, ex))
       var completion = ""
@@ -162,6 +178,7 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
           completion = valueToString(ctx, res)
       if not rt.exitRequested and rt.pending > 0 and rt.loop != nil:
         rt.loop.run()
+      mark(prof, pt, "drain")
       if awaited != nil:
         JSValueUnprotect(ctx, awaited)
         if rt.promiseSettled and rt.promiseRejected:
@@ -172,12 +189,14 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
           completion = valueToString(ctx, awaited)
       if rt.uncaught.len > 0:
         raise newException(CarneError, rt.uncaught)
+      mark(prof, pt, "settle")
       return (completion, rt.exitCode)
     finally:
       setCurrentRt(nil)
       closeAllServers()
       if rt.loop != nil:
         rt.loop.close()
+      mark(prof, pt, "teardown")
 
 proc runCode*(code: string; sourceURL = "script.js";
     argv: seq[string] = @[]): string =
