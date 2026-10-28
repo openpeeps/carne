@@ -47,6 +47,11 @@ init proc(module: Module) =
   into one CommentStmt, markers stripped.
 - `exportObject` guard template errors outside `init` (macros expand
   outside-in, so `init` consumes the raw node first).
+- No closures over callback bindings: `substBody` copies nested routine
+  defs (incl. `nnkLambda`) verbatim while declarations become gensyms,
+  so a lambda capturing `ctx`/locals breaks. Share via top-level procs
+  with explicit params instead (`std/gettext` inlines its MemFile
+  open/close per member for this reason).
 
 ## Gotcha: `init` vs powpow
 - `powpow/loop` re-exports `init` (`Platform.init`), which beats the macro

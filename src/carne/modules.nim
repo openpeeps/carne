@@ -23,6 +23,14 @@ import ./std/csv
 import ./std/xml
 import ./std/sql
 import ./std/crypto
+import ./std/path
+import ./std/colors
+import ./std/css
+import ./std/diff
+import ./std/gettext
+import ./std/regex
+import ./std/qr
+import ./std/svg
 
 type
   Installer* = proc(ctx: JSContextRef; rt: Runtime): JSObjectRef
@@ -42,6 +50,14 @@ let installers* = {
   "std/xml": Installer(xml.install),
   "std/sql": Installer(sql.install),
   "std/crypto": Installer(crypto.install),
+  "std/path": Installer(path.install),
+  "std/colors": Installer(colors.install),
+  "std/css": Installer(css.install),
+  "std/diff": Installer(diff.install),
+  "std/gettext": Installer(gettext.install),
+  "std/regex": Installer(regex.install),
+  "std/qr": Installer(qr.install),
+  "std/svg": Installer(svg.install),
 }.toTable
 
 proc requireImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
