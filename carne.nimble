@@ -1,0 +1,19 @@
+# Package
+
+version       = "0.1.0"
+author        = "George Lemon"
+description   = "JavaScript runtime on JavaScriptCore"
+license       = "MIT"
+srcDir        = "src"
+bin           = @["carne"]
+binDir        = "bin"
+
+
+# Dependencies
+
+requires "nim >= 2.2.10"
+requires "javascriptcore >= 0.1.0"
+requires "openparser >= 0.4.1"
+requires "powpow >= 0.2.4"
+requires "datpkgr >= 0.1.11"
+requires "semver >= 1.2.3"

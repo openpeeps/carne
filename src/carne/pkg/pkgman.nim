@@ -1,0 +1,219 @@
+# Carne package management on top of datpkgr.
+#
+# Owns the `~/.carne` home (`CARNE_HOME` overrides it): datpkgr keeps its
+# databases, `packages/`, `develop/` and caches there. The home is created
+# on the first package operation - there is no setup step.
+#
+# Packages are JS source trees declared by `package.json` (see
+# `pkgmanifest`). This phase supports registry installs (once the carne
+# packages source exists), installs by git URL and editable `develop`
+# checkouts.
+#
+# NOTE: importing `datpkgr/operations` pulls the install thread pool, so
+# any binary linking this module must build with `--threads:on` (the
+# carne host does; see `src/carne.nims`). The CLI imports this module
+# under `when isMainModule` only, keeping library imports threads-free.
+
+import std/[algorithm, json, options, os, sequtils, strutils, tables]
+import pkg/datpkgr/[config, install, operations, store, types]
+import ./pkgmanifest
+
+export config, install, operations, store, types
+export pkgmanifest
+
+const pkgRegistryUrl* =
+  "https://raw.githubusercontent.com/carne/pkgs/main/packages.json"
+  ## The default packages registry (placeholder until carne/pkgs exists).
+
+const pkgDefaultSourceName* = "carne"
+  ## The default registry source name in sources.json.
+
+proc carneHome*(): string =
+  ## Package-manager home: `CARNE_HOME` or `~/.carne`.
+  getEnv("CARNE_HOME", getHomeDir() / ".carne")
+
+proc carneLogCb(level: LogLevel, msg: string) {.gcsafe.} =
+  case level
+  of lvlDebug:
+    stderr.writeLine("[pkg] " & msg)
+  of lvlInfo, lvlSuccess:
+    echo msg
+  of lvlWarn:
+    stderr.writeLine("warning: " & msg)
+  of lvlError:
+    stderr.writeLine("error: " & msg)
+
+proc ensurePkgSource*(cfg: DatpkgrConfig) =
+  ## Make sure the carne registry source is registered. Fresh homes get
+  ## it from datpkgr's own defaults; homes created before the registry
+  ## existed carry a sourceless sources.json that `ensureSourcesFile`
+  ## never upgrades (it only writes when missing), so add it here.
+  ##
+  ## NB: consult the raw file, not `loadSources` - its fallback fabricates
+  ## a usable-looking entry named `defaultSourceName` when the file yields
+  ## nothing, which is indistinguishable from a registered source.
+  var present = false
+  try:
+    let content = readFile(cfg.rootPath / cfg.sourcesPath())
+    let j = parseJson(content)
+    let arr = if j.kind == JArray: j
+      elif j.kind == JObject and j.hasKey("sources"): j["sources"]
+      else: newJArray()
+    if arr.kind == JArray:
+      for item in arr:
+        if item.kind == JObject and item.hasKey("name") and
+            item["name"].getStr == cfg.defaultSourceName and
+            item.hasKey("url") and item["url"].getStr.len > 0:
+          present = true
+          break
+  except CatchableError:
+    discard
+  if present:
+    return
+  # Drop sourceless entries on the way through (the pre-registry
+  # default has an empty URL and can never seed anything).
+  var sources: seq[Source] = @[]
+  for src in cfg.loadSources():
+    if src.url.len > 0 and src.name != cfg.defaultSourceName:
+      sources.add(src)
+  sources.add(Source(name: cfg.defaultSourceName,
+    url: cfg.defaultRegistryUrl))
+  cfg.saveSources(sources)
+
+proc newCarnePkgConfig*(rootPath = "", debug = false,
+    ensureSource = true): DatpkgrConfig =
+  ## datpkgr config rooted at the carne home, wired to `package.json`
+  ## manifests, the carne packages registry and plain CLI logging.
+  ## `rootPath` overrides the home (tests point it at a temp dir for
+  ## hermetic runs). `ensureSource = false` skips the home-dir IO.
+  let root = if rootPath.len > 0: rootPath else: carneHome()
+  var cbs: Callbacks
+  cbs.log = carneLogCb
+  result = newDatpkgrConfig("carne", root, debugEnabled = debug,
+    callbacks = cbs)
+  result.manifestParser = parsePackageManifest
+  result.manifestFinder = findPackageJson
+  result.manifestFileName = proc(pkg: string): string = pkgManifestFileName
+  result.defaultRegistryUrl = pkgRegistryUrl
+  result.defaultSourceName = pkgDefaultSourceName
+  if ensureSource:
+    result.ensurePkgSource()
+
+proc pkgInstall*(cfg: DatpkgrConfig, spec: string, url = "",
+    verbose = true): bool =
+  ## Install one package: `spec` is a registry name (needs the carne
+  ## packages source), a git URL, or a name with explicit `--url`.
+  if url.len > 0:
+    cfg.installPackage(spec, url = url, verbose = verbose)
+  elif isGitUrl(spec):
+    cfg.installPackage(pkgNameFromUrl(spec), url = spec, verbose = verbose)
+  else:
+    cfg.installPackage(spec, verbose = verbose)
+
+proc pkgRemove*(cfg: DatpkgrConfig, name: string,
+    version = ""): bool =
+  ## Uninstall `name` (one version, or all when `version` is empty).
+  ## No confirm callback: the CLI confirms nothing, removal is immediate.
+  cfg.uninstallPackage(name, version)
+
+proc pkgUpdate*(cfg: DatpkgrConfig, name = "",
+    verbose = true): bool =
+  ## Update one package, or every installed package when `name` is empty.
+  if name.len == 0:
+    cfg.updateAllPackages(verbose = verbose)
+  else:
+    cfg.updatePackage(name, verbose = verbose)
+
+proc pkgDevelop*(cfg: DatpkgrConfig, dir: string): bool =
+  ## Editable install: link `~/.carne/develop/<name>` at `dir`.
+  ## The directory must carry a `package.json` manifest.
+  cfg.developPackage(dir)
+
+proc pkgPrune*(cfg: DatpkgrConfig) =
+  ## Drop orphaned packages (installed but no longer reachable).
+  cfg.prunePackages()
+
+proc pkgList*(cfg: DatpkgrConfig) =
+  ## Print installed packages as `name@version  path`, roots first.
+  let all = cfg.installedRecordsAll()
+  if all.len == 0:
+    echo "no packages installed"
+    return
+  var roots: seq[string] = @[]
+  var rest: seq[string] = @[]
+  for name in sorted(all.keys.toSeq):
+    var isRoot = false
+    for rec in all[name]:
+      if rec.root:
+        isRoot = true
+        break
+    if isRoot:
+      roots.add(name)
+    else:
+      rest.add(name)
+  for name in roots & rest:
+    for rec in all[name]:
+      var line = name & "@" & rec.version
+      if rec.path.len > 0:
+        line.add("  " & rec.path)
+      echo line
+
+proc firstExisting(paths: varargs[string]): string =
+  for p in paths:
+    if p.len > 0 and fileExists(p):
+      return p
+  ""
+
+proc packageEntryPoint*(cfg: DatpkgrConfig, root, name: string): string =
+  ## Absolute path of a package's entry file: manifest `main` when set,
+  ## else `index.js`, `src/index.js`, `<name>.js` - first hit wins,
+  ## "" when nothing exists.
+  let mf = cfg.findManifestInDir(root)
+  if mf.len > 0:
+    try:
+      let m = cfg.parseManifest(readFile(mf), mf)
+      let main = m.manifestMain()
+      if main.len > 0:
+        let hit = firstExisting(root / main)
+        if hit.len > 0:
+          return hit
+    except CatchableError:
+      discard
+  firstExisting(root / "index.js", root / "src" / "index.js",
+    root / name & ".js")
+
+proc resolvePkgImport*(cfg: DatpkgrConfig,
+    spec: string): Option[string] =
+  ## Map `pkg/<name>` (or `pkg/<name>/sub/path`) to an absolute script
+  ## path, none when unresolvable. Develop checkouts win automatically
+  ## via `resolveInstalledPath`. `..` escapes are rejected.
+  const prefix = "pkg/"
+  if not spec.startsWith(prefix):
+    return none(string)
+  let tail = spec[prefix.len .. ^1]
+  if tail.len == 0:
+    return none(string)
+  let slash = tail.find('/')
+  let name = if slash < 0: tail else: tail[0 ..< slash]
+  let rest = if slash < 0: "" else: tail[slash + 1 .. ^1]
+  if name.len == 0 or name == "." or name == "..":
+    return none(string)
+  let root = cfg.resolveInstalledPath(name, "")
+  if root.len == 0 or not dirExists(root):
+    return none(string)
+  if rest.len == 0:
+    let entry = cfg.packageEntryPoint(root, name)
+    if entry.len == 0:
+      return none(string)
+    return some(entry)
+  let joined = normalizedPath(root / rest)
+  if joined != root and not joined.startsWith(root & DirSep):
+    return none(string)
+  if splitFile(joined).ext.len > 0:
+    if fileExists(joined):
+      return some(joined)
+    return none(string)
+  let hit = firstExisting(joined & ".js")
+  if hit.len > 0:
+    return some(hit)
+  none(string)
