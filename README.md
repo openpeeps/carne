@@ -43,28 +43,29 @@
 
 ## Benchmarks
 
-Against dfkup's JS bench suite (`bench/js`, via `hyperfine --warmup 2 --min-runs 3`,
-macOS, `bench/run.sh` reproduces):
+Shared JS bench suite (`bench/js`, via `hyperfine --warmup 2 --min-runs 3`,
+macOS, `bench/run.sh` reproduces; node v22.22.1, bun 1.4.3):
 
-| Benchmark | carne |
-|-----------|-------|
-| fib_recursive | 42.8 ms ± 1.8 ms |
-| nested_loops | 9.5 ms ± 0.3 ms |
-| prime_sieve | 9.2 ms ± 0.3 ms |
-| string_concat | 9.4 ms ± 0.4 ms |
-| tail_recursive | 9.7 ms ± 0.3 ms |
-| range_sum | 38.9 ms ± 1.3 ms |
-| collatz | 51.3 ms ± 0.4 ms |
-| array_sum | 14.6 ms ± 0.4 ms |
-| bubble_sort | 11.7 ms ± 0.4 ms |
-| object_access | 11.5 ms ± 0.6 ms |
-| float_math | 13.0 ms ± 0.3 ms |
-| call_overhead | 10.4 ms ± 0.3 ms |
-| fizzbuzz_count | 43.7 ms ± 0.4 ms |
+| Benchmark | carne | node | bun |
+|-----------|-------|------|-----|
+| fib_recursive | 42.4 ms ± 0.5 ms | 85.1 ms ± 1.1 ms | 45.5 ms ± 1.0 ms |
+| nested_loops | 9.3 ms ± 0.4 ms | 36.3 ms ± 0.7 ms | 11.9 ms ± 0.4 ms |
+| prime_sieve | 9.2 ms ± 0.3 ms | 35.0 ms ± 0.5 ms | 11.7 ms ± 0.3 ms |
+| string_concat | 9.4 ms ± 0.3 ms | 34.5 ms ± 0.5 ms | 11.7 ms ± 0.7 ms |
+| tail_recursive | 9.7 ms ± 0.3 ms | CRASHED | 11.8 ms ± 0.3 ms |
+| range_sum | 38.4 ms ± 0.4 ms | 43.8 ms ± 0.4 ms | 19.6 ms ± 0.3 ms |
+| collatz | 51.1 ms ± 0.4 ms | 69.5 ms ± 0.7 ms | 53.4 ms ± 2.3 ms |
+| array_sum | 14.6 ms ± 0.5 ms | 40.7 ms ± 0.9 ms | 16.8 ms ± 0.3 ms |
+| bubble_sort | 11.8 ms ± 0.3 ms | 36.7 ms ± 0.4 ms | 14.5 ms ± 0.3 ms |
+| object_access | 11.3 ms ± 0.3 ms | 36.9 ms ± 0.4 ms | 14.0 ms ± 0.3 ms |
+| float_math | 12.9 ms ± 0.3 ms | 39.1 ms ± 1.0 ms | 16.5 ms ± 0.4 ms |
+| call_overhead | 10.4 ms ± 0.2 ms | 35.5 ms ± 0.4 ms | 12.5 ms ± 0.3 ms |
+| fizzbuzz_count | 43.8 ms ± 0.4 ms | 64.8 ms ± 0.6 ms | 38.3 ms ± 0.4 ms |
 
-A cold `hello.js` run costs ~8.5 ms, so everything in the 9–14 ms band is
-startup-dominated (JSC context + stdlib install), not compute. Only fib,
-range_sum, collatz, and fizzbuzz visibly exceed the floor.
+A cold `hello.js` run costs carne ~8.5 ms, so everything near that floor is
+startup-dominated (JSC context + stdlib install), not compute. Node crashes
+`tail_recursive` (no proper tail calls: stack overflow at 10k frames);
+carne inherits JSC's tail-call support, like bun.
 
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/pistachio/issues)
