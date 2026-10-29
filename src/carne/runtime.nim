@@ -193,8 +193,8 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
       return (completion, rt.exitCode)
     finally:
       setCurrentRt(nil)
-      if onTeardown != nil:
-        onTeardown()
+      for hook in onTeardown:
+        hook()
       if rt.loop != nil:
         rt.loop.close()
       mark(prof, pt, "teardown")

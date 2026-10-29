@@ -406,6 +406,44 @@ http.close(srv.port);
 become 500s. Client and server multiplex on one event loop with the
 timers, truly async, no threads.
 
+### `std/ws`
+
+Async + sync WebSocket client and server, example:
+
+```js
+const ws = require("std/ws");
+
+// Server (stays alive until closed, like Node)
+const srv = ws.serve(8080, {
+  onMessage: (conn, msg) => conn.send("hi " + msg.data)
+});
+
+// Async client (handshake on the loop)
+new Promise((resolve) => {
+  const c = ws.connect("ws://127.0.0.1:8080/chat", {
+    onOpen: () => c.send("ada"),
+    onMessage: (msg) => {
+      console.log(msg.data); // hi ada
+      c.close();
+      ws.close(srv.port);
+      resolve();
+    }
+  });
+});
+
+// Sync client (blocks until open)
+const c2 = ws.connectSync("ws://127.0.0.1:8080/chat");
+c2.send("sync");
+c2.close();
+```
+
+`connect(url[, handlers])` returns a `{send, close}` handle immediately;
+`connectSync(url[, {timeoutMs, ...handlers}])` pumps the same loop until
+open (default 10s). Server callbacks get `(conn, payload)`, client
+callbacks just `(payload)`; messages are `{data, isBinary}`, closes
+`{code, reason}`, errors `{message}`. An error with no `onError` handler
+is uncaught (Node rules). `ws://` only in v1, no TLS yet.
+
 ## Roadmap
 - [x] JSC runtime: console/process/require/timers CLI
 - [x] Package management (`carne pkg`, manifests)
@@ -413,6 +451,7 @@ timers, truly async, no threads.
 - [x] `std/sql`, `std/crypto`, `std/path`, `std/colors`
 - [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/qr`, `std/svg`
 - [x] `std/http` (async client + server) + top-level promise unwrap in `runCode`
+- [x] `std/ws` (async + sync client, server, no TLS)
 - [x] Lazy startup (deferred event loop, per-run TLS, cached spec data)
 - [x] Benchmark suite + results
 - [ ] Top-level await in scripts (currently needs an async IIFE)

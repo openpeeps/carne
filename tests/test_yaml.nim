@@ -1,4 +1,3 @@
-import std/json
 import unittest
 
 import carne

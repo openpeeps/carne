@@ -365,7 +365,7 @@ proc closeAllServers*() =
 
 # Teardown hook: runs at runtime teardown when this module is linked in
 # (binary, or tests that register std/http). Safe with none live.
-onTeardown = closeAllServers
+onTeardown.add(closeAllServers)
 
 ## Builds the std/http namespace object.
 init proc(module: Module) =
