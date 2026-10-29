@@ -81,7 +81,7 @@ requiring one costs nothing until first use. Timers are globals
 
 ### `std/env`, process info and environment
 
-```
+```js
 const env = require("std/env");
 console.log(env.args());            // e.g. ["carne", "app.js", "--port", "3000"]
 console.log(env.getenv("HOME"));    // string | undefined
@@ -91,7 +91,7 @@ env.exit(2);                        // terminate with exit code 2
 
 ### `std/fs`, synchronous file system access
 
-```
+```js
 const fs = require("std/fs");
 fs.writeFile("/tmp/hello.txt", "hi");
 console.log(fs.readFile("/tmp/hello.txt")); // "hi" (throws on IOError)
@@ -103,7 +103,7 @@ fs.remove("/tmp/hello.txt");                 // files only
 
 ### Timers, globals, no require
 
-```
+```js
 setTimeout(() => console.log("later"), 100);          // -> numeric id
 const id = setInterval(() => console.log("tick"), 1000);
 clearInterval(id); // or clearTimeout(id)
@@ -113,31 +113,33 @@ Extra args are forwarded to the callback (`setTimeout((a) => console.log(a), 10,
 Timer throws are recorded as uncaught (exit 1 after drain) without killing
 the remaining timers.
 
-### `std/yaml`, YAML parsing and serialization
+### `std/yaml`
 
-```
+YAML parsing and serialization. Single-document in v1: trailing documents after `---` are ignored.
+
+```js
 const yaml = require("std/yaml");
 const doc = yaml.parse("name: ada\ntags:\n  - nim\n  - js\n");
 console.log(doc.name);            // "ada"
 console.log(yaml.stringify(doc)); // single YAML document
 ```
 
-Single-document in v1: trailing documents after `---` are ignored.
+### `std/toml`
 
-### `std/toml`, TOML parsing and serialization
+TOML parsing and serialization. TOML datetimes surface as strings (the literal as written).
 
-```
+```js
 const toml = require("std/toml");
 const cfg = toml.parse('[server]\nhost = "localhost"\nport = 3000\n');
 console.log(cfg.server.port); // 3000
 console.log(toml.stringify(cfg));
 ```
 
-TOML datetimes surface as strings (the literal as written).
+### `std/ical`
 
-### `std/ical`, iCalendar parsing and serialization
+iCalendar parsing and serialization
 
-```
+```js
 const ical = require("std/ical");
 const cal = ical.parse("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:1\r\nDTSTART:20260101T100000Z\r\nSUMMARY:Hi\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
 console.log(cal.events.length);
@@ -149,9 +151,11 @@ stay absent; dates serialize as `{value, tzid?}`, durations as `"P1DT2H"`
 strings. Unknown properties ride along in `extraProps` and survive
 the roundtrip.
 
-### `std/dotenv`, `.env` file parsing
+### `std/dotenv`
 
-```
+`.env` file parsing
+
+```js
 const dotenv = require("std/dotenv");
 console.log(dotenv.parse("PORT=3000\nHOST=localhost:$PORT\n"));
 // {PORT: "3000", HOST: "localhost:3000"} (variable expansion applied)
@@ -161,39 +165,42 @@ dotenv.load(".env", true); // ...overwriting existing vars
 
 ### `std/plist`, Apple property lists
 
-```
+```js
 const plist = require("std/plist");
 const v = plist.parse('<plist version="1.0"><dict><key>Name</key><string>Ada</string></dict></plist>');
 console.log(v.Name);          // "Ada" (XML or binary plist in)
 console.log(plist.stringify(v)); // XML plist out
 ```
 
-### `std/bson`, BSON parsing and serialization
+### `std/bson`
 
-```
+BSON parsing and serialization. Raw BSON bytes travel with an opaque mapping (do not read the string
+as text); `stringify` output always parses back.
+
+```js
 const bson = require("std/bson");
 const blob = bson.stringify({name: "ada", n: 1});
 console.log(JSON.stringify(bson.parse(blob))); // {"name":"ada","n":1}
 ```
 
-Raw BSON bytes travel with an opaque mapping (do not read the string
-as text); `stringify` output always parses back.
+### `std/csv`
 
-### `std/csv`, CSV parsing
+CSV parsing. With `headers: true` the first row becomes keys and the result is an
+array of objects.
 
-```
+```js
 const csv = require("std/csv");
 console.log(csv.parse("a,b\n1,2\n"));                  // [["a","b"],["1","2"]]
 console.log(csv.parse("a,b\n1,2\n", {headers: true})); // [{a: "1", b: "2"}]
 csv.parse("a;b\n1;2\n", {delimiter: ";"});              // custom delimiter/quote
 ```
 
-With `headers: true` the first row becomes keys and the result is an
-array of objects.
+### `std/xml`
 
-### `std/xml`, XML parsing and serialization
+XML parsing and serialization. Elements map to `{tag, attrs, children}`. Comments, prologs and doctypes
+are dropped on parse.
 
-```
+```js
 const xml = require("std/xml");
 const node = xml.parse("<note><to>Ada</to></note>");
 console.log(node.tag);                          // "note"
@@ -201,33 +208,32 @@ console.log(node.children[0].children[0]);      // "Ada" (text nodes are strings
 console.log(xml.stringify(node));
 ```
 
-Elements map to `{tag, attrs, children}`. Comments, prologs and doctypes
-are dropped on parse.
+### `std/vcard`
 
-### `std/vcard`, vCard contact parsing
+vCard contact parsing. Parse-only in v1: there is no object-to-vCard builder yet.
 
-```
+```js
 const vcard = require("std/vcard");
 const contacts = vcard.parse("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada\r\nEND:VCARD\r\n");
 console.log(contacts.length); // 1 (one object per VCARD)
 ```
 
-Parse-only in v1: there is no object-to-vCard builder yet.
+### `std/feed`
 
-### `std/feed`, RSS and Atom feed parsing
+RSS and Atom feed parsing. Parse-only in v1
 
-```
+```js
 const feed = require("std/feed");
 const rss = feed.parseRss('<rss version="2.0"><channel><title>T</title><item><title>Hi</title></item></channel></rss>');
 console.log(rss.items.length); // 1 (feed object with items[])
 const atom = feed.parseAtom(text); // feed object with entries[]
 ```
 
-Parse-only in v1.
+### `std/sql`
 
-### `std/sql`, SQL parsing and validation
+SQL parsing and validation.
 
-```
+```js
 const sql = require("std/sql");
 const ast = sql.sqlite.parse("SELECT a FROM t"); // AST object ({kind, value?, quote?, children?})
 console.log(sql.postgres.validate("SELECT $1"));      // {valid: true}
@@ -238,16 +244,21 @@ One sub-namespace per dialect: `sqlite`, `postgres` (= `pgsql`), `mysql`.
 Each has `parse(sql)` (throws a JS `Error` on syntax errors) and
 `validate(sql)` (never throws, reports `{valid: false, error}` instead).
 
-### `std/crypto`, hashing, AEAD sealing, signatures, passwords
+### `std/crypto`
 
-```
+hashing, AEAD sealing, signatures, passwords
+
+```js
 const crypto = require("std/crypto");
 console.log(crypto.hash.sha256hex("abc")); // "ba7816bf8f01cfea..."
+
 const stored = crypto.password.hash("s3cret");      // argon2id "salt:hash"
 console.log(crypto.password.verify("s3cret", stored)); // true
+
 const keys = crypto.sign.keypair(); // {publicKey, secretKey} hex (ed25519)
 const sig = crypto.sign.sign(keys.secretKey, "msg");
 console.log(crypto.sign.verify(keys.publicKey, "msg", sig)); // true
+
 const keyHex = "00".repeat(32); // 32-byte key as hex
 const env = crypto.aead.seal("secret", keyHex); // {nonce, mac, cipher} hex
 console.log(crypto.aead.open(env, keyHex));     // "secret" (throws on MAC failure)
@@ -257,9 +268,11 @@ All binary values cross the boundary as lowercase hex strings. `open`
 throws on MAC failure; `verify` returns `false` on mismatch instead.
 X25519/RSA/ECDSA and AES modes are deferred.
 
-### `std/path`, file-path and URL parsing
+### `std/path`
 
-```
+file-path and URL parsing. Parse-only in v1. Absent options stay absent.
+
+```js
 const path = require("std/path");
 console.log(path.parse("/a/b/c.txt").ext); // "txt"
 console.log(path.parse("/a/b/c.txt").segments); // ["a", "b", "c.txt"]
@@ -267,11 +280,11 @@ const web = path.parse("https://user@host:8080/p?q=1#frag");
 console.log(web.host + web.path); // "host/p"
 ```
 
-Parse-only in v1. Absent options stay absent.
+### `std/colors`
 
-### `std/colors`, color parsing, formatting and math
+Color parsing, formatting and math
 
-```
+```js
 const colors = require("std/colors");
 console.log(colors.toHex(colors.parse("red"))); // "#ff0000"
 console.log(colors.toRgb(colors.parse("red"))); // "rgb(255, 0, 0)"
@@ -284,18 +297,22 @@ Colors cross the boundary as `{r, g, b, a}` objects. Accepts hex,
 `saturate`, `spin`, `complement`, `greyscale`, `mix`, `triad`,
 `isReadable`, `isLight`.
 
-### `std/css`, CSS parsing and declaration validation
+### `std/css`
 
-```
+CSS parsing and declaration validation
+
+```js
 const css = require("std/css");
 console.log(css.parse("a { color: red; }").rules.length); // 1
 console.log(css.validate("a { color: red; bogus: 1; }"));
 // [{property: "bogus", valid: false, errors: [...]}] ([] when clean)
 ```
 
-### `std/diff`, unified diffs (Myers/patience/histogram)
+### `std/diff`
 
-```
+Unified diffs (Myers/patience/histogram)
+
+```js
 const diff = require("std/diff");
 console.log(diff.diff("a\nb\n", "a\nc\n").identical); // false
 console.log(diff.unified("a\nb\n", "a\nc\n", {context: 1}));
@@ -306,33 +323,36 @@ console.log(diff.unified("a\nb\n", "a\nc\n", {context: 1}));
 `{kind: "equal"|"insert"|"delete", text, spans?}`. Both functions take
 an optional `{context}` options object (default 3).
 
-### `std/gettext`, `.po` parsing and translation
+### `std/gettext`
 
-```
+`.po` parsing and translation. Untranslated ids fall back to the msgid. `.mo` is out of scope in v1.
+
+```js
 const gettext = require("std/gettext");
 const po = 'msgid "hi"\nmsgstr "salut"\n';
+
 console.log(gettext.translate(po, "hi")); // "salut"
 console.log(gettext.ntranslate(po, "file", "files", 2));
 console.log(gettext.parse(po).entries.length);
 ```
 
-Untranslated ids fall back to the msgid. `.mo` is out of scope in v1.
+### `std/regex`
 
-### `std/regex`, server-side regular expressions
+Server-side regular expressions. Same engine/semantics as Nim code using openparser. `exec` returns
+`null` on no match.
 
-```
+```js
 const regex = require("std/regex");
 console.log(regex.test("\\d+", "abc123")); // true (search semantics)
 console.log(regex.exec("(\\w+)@(\\w+)", "mail ada@x.io").match); // "ada@x"
 console.log(regex.matchAll("a+", "aa b aaa").length); // 2
 ```
 
-Same engine/semantics as Nim code using openparser. `exec` returns
-`null` on no match.
+### `std/qr`
 
-### `std/qr`, QR code generation (Model 2)
+QR code generation (Model 2). Decoding is out of scope in v1.
 
-```
+```js
 const qr = require("std/qr");
 const code = qr.encode("hello"); // {size, svg, terminal}
 console.log(code.size);          // 21
@@ -340,24 +360,24 @@ console.log(code.svg.slice(0, 5)); // "<svg "
 qr.encode("hello", {ecLevel: "H"}); // higher error correction (L/M/Q/H)
 ```
 
-Decoding is out of scope in v1.
+### `std/svg`
 
-### `std/svg`, SVG parsing
+SVG parsing. Elements map to `{tag, attrs, children}` (same shape as `std/xml`);
+text, comments and CDATA become `{kind, text}` leaves. Serialization
+is out of scope in v1, pair with `std/xml` when you need to write SVG.
 
-```
+```js
 const svg = require("std/svg");
 const node = svg.parse('<svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>');
 console.log(node.tag);              // "svg"
 console.log(node.children.length);  // 1
 ```
 
-Elements map to `{tag, attrs, children}` (same shape as `std/xml`);
-text, comments and CDATA become `{kind, text}` leaves. Serialization
-is out of scope in v1, pair with `std/xml` when you need to write SVG.
+### `std/http`
 
-### `std/http`, async HTTP client + server
+Async HTTP client + server, example:
 
-```
+```js
 const http = require("std/http");
 
 // Client (Promises; wrap in an async IIFE, no top-level await yet)
