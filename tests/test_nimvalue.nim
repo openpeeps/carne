@@ -164,3 +164,33 @@ test "strict scalars reject mistyped args":
     fail()
   except CarneError as e:
     check "expected number" in e.msg
+
+test "options readers ignore extra keys and undefined":
+  check runCode(
+    "JSON.stringify(require('std/diff').diff('a', 'b', " &
+    "{context: undefined, junk: 'x'}).stats)") ==
+    runCode(
+    "JSON.stringify(require('std/diff').diff('a', 'b').stats)")
+  check runCode(
+    "require('std/qr').encode('hi', {ecLevel: 'H', junk: 1}).size") ==
+    runCode("require('std/qr').encode('hi', {ecLevel: 'H'}).size")
+
+test "options bags reject arrays":
+  try:
+    discard runCode("require('std/diff').diff('a', 'b', [3])")
+    fail()
+  except CarneError as e:
+    check "expected object" in e.msg
+
+test "lazy field access reads single props":
+  withGlobalContext(ctx):
+    var ex: JSValueRef = nil
+    let obj = evalScript(ctx, "({a: 1, b: {c: 'x'}})", exception = ex)
+    check ex == nil
+    var err = ""
+    check getField(ctx, obj, "a", err).i == 1
+    check err == ""
+    check getField(ctx, obj, "missing", err).kind == nvkUndefined
+    check err == ""
+    check getField(ctx, obj, "b", err).get("c", "t").s == "x"
+    check err == ""

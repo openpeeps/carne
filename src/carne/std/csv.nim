@@ -29,22 +29,28 @@ init proc(module: Module) =
       var headers = false
       var opts = defaultCsvOptions()
       if int(argumentCount) >= 2:
-        var v: NimValue
-        if not nimArg(ctx, args, 1, "parse", exception, v):
+        var optsObj: JSValueRef
+        if not objArg(ctx, args, 1, "parse", exception, optsObj):
           return nil
-        if v.kind != nvkObject:
-          throwError(ctx, "parse: options must be an object", exception)
+        var err = ""
+        let h = getField(ctx, optsObj, "headers", err)
+        if err != "":
+          throwError(ctx, "parse: options.headers " & err, exception)
           return nil
-        if v.hasKey("headers") and v.get("headers", "parse").kind == nvkBool:
-          headers = v.get("headers", "parse").b
-        if v.hasKey("delimiter"):
-          let d = v.get("delimiter", "parse")
-          if d.kind == nvkString and d.s.len > 0:
-            opts.delimiter = d.s[0]
-        if v.hasKey("quote"):
-          let q = v.get("quote", "parse")
-          if q.kind == nvkString and q.s.len > 0:
-            opts.quote = q.s[0]
+        if h.kind == nvkBool:
+          headers = h.b
+        let d = getField(ctx, optsObj, "delimiter", err)
+        if err != "":
+          throwError(ctx, "parse: options.delimiter " & err, exception)
+          return nil
+        if d.kind == nvkString and d.s.len > 0:
+          opts.delimiter = d.s[0]
+        let q = getField(ctx, optsObj, "quote", err)
+        if err != "":
+          throwError(ctx, "parse: options.quote " & err, exception)
+          return nil
+        if q.kind == nvkString and q.s.len > 0:
+          opts.quote = q.s[0]
       let tmp = getTempDir() / "carne_csv_parse.tmp"
       try:
         writeFile(tmp, text)

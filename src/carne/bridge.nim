@@ -410,6 +410,58 @@ proc nimArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     return false
   true
 
+proc jsKindName*(ctx: JSContextRef; v: JSValueRef): string =
+  ## jsTypeName for live refs (used in objArg type errors).
+  if v == nil:
+    return "null"
+  case JSValueGetType(ctx, v)
+  of kJSTypeUndefined: "undefined"
+  of kJSTypeNull: "null"
+  of kJSTypeBoolean: "boolean"
+  of kJSTypeNumber: "number"
+  of kJSTypeString: "string"
+  of kJSTypeSymbol: "symbol"
+  of kJSTypeBigInt: "bigint"
+  of kJSTypeObject:
+    if JSValueIsArray(ctx, v): "array"
+    elif JSObjectIsFunction(ctx, v): "function"
+    else: "object"
+
+proc objArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
+    i: int; name: string; exception: ptr JSValueRef;
+    obj: var JSValueRef): bool =
+  ## Borrows arg i as an object ref for lazy field access. No snapshot:
+  ## fields are converted on demand via getField. Arrays are rejected
+  ## (options bags are plain objects). False + JS throw on failure.
+  if args[i] == nil:
+    throwError(ctx, name & ": argument " & $i & " is missing", exception)
+    return false
+  if JSValueGetType(ctx, args[i]) != kJSTypeObject or
+      JSValueIsArray(ctx, args[i]):
+    throwError(ctx, name & ": argument " & $i & " expected object, got " &
+      jsKindName(ctx, args[i]), exception)
+    return false
+  obj = args[i]
+  true
+
+proc getField*(ctx: JSContextRef; obj: JSValueRef; key: string;
+    err: var string): NimValue =
+  ## Converts a single property. Missing (or explicit `undefined`)
+  ## yields nvkUndefined with empty err, so readers treat absent and
+  ## undefined alike. err is set only on real failures (throwing getter,
+  ## unreadable nested value).
+  err = ""
+  if obj == nil or JSValueGetType(ctx, obj) != kJSTypeObject:
+    err = "not an object"
+    return NimValue(kind: nvkUndefined)
+  let k = newJSString(key)
+  defer: JSStringRelease(k)
+  var ex: JSValueRef = nil
+  let prop = JSObjectGetProperty(ctx, obj, k, addr ex)
+  if ex != nil or prop == nil:
+    return NimValue(kind: nvkUndefined)
+  fromJS(ctx, prop, err)
+
 proc asString*(v: NimValue; what: string): string =
   ## Strict string getter. Raises (callers turn it into a JS throw).
   if v.kind != nvkString:

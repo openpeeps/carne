@@ -81,35 +81,40 @@ proc methodToString(m: HttpMethod): string =
   of HttpPatch: "PATCH"
   else: ($m)[4 .. ^1].toUpperAscii()
 
-proc parseOpts(v: NimValue; name: string; allowMethod,
-    allowBody: bool): FetchOpts =
-  ## Reads {method?, headers?, body?, timeoutMs?}. Raises on anything
-  ## else (callers turn it into a sync JS throw).
+proc parseOpts(ctx: JSContextRef; obj: JSValueRef; name: string;
+    allowMethod, allowBody: bool): FetchOpts =
+  ## Reads {method?, headers?, body?, timeoutMs?} lazily; absent and
+  ## undefined fields both mean default. Raises on anything else
+  ## (callers turn it into a sync JS throw). nil obj means absent.
   result = FetchOpts(meth: HttpGet, headers: @[], body: "", timeoutMs: -1)
-  if v.kind == nvkUndefined:
+  if obj == nil:
     return
-  if v.kind != nvkObject:
-    raise newException(CatchableError, name & ": options must be an object")
-  if v.hasKey("method"):
+  var err = ""
+  template field(key: string): NimValue =
+    let f = getField(ctx, obj, key, err)
+    if err != "":
+      raise newException(CatchableError, name & ": options." & key & " " & err)
+    f
+  let m = field("method")
+  if m.kind != nvkUndefined:
     if not allowMethod:
       raise newException(CatchableError,
         name & ": method is fixed here, use fetch for full control")
-    let m = v.get("method", name)
     if m.kind != nvkString:
       raise newException(CatchableError,
         name & ": options.method must be a string")
     result.meth = methodFromString(m.s, name)
-  if v.hasKey("body"):
+  let b = field("body")
+  if b.kind != nvkUndefined:
     if not allowBody:
       raise newException(CatchableError,
         name & ": body is fixed here, use fetch for full control")
-    let b = v.get("body", name)
     if b.kind != nvkString:
       raise newException(CatchableError,
         name & ": options.body must be a string")
     result.body = b.s
-  if v.hasKey("headers"):
-    let h = v.get("headers", name)
+  let h = field("headers")
+  if h.kind != nvkUndefined:
     if h.kind != nvkObject:
       raise newException(CatchableError,
         name & ": options.headers must be an object")
@@ -118,8 +123,8 @@ proc parseOpts(v: NimValue; name: string; allowMethod,
         raise newException(CatchableError,
           name & ": header \"" & k & "\" must be a string")
       result.headers.add((k, hv.s))
-  if v.hasKey("timeoutMs"):
-    let t = v.get("timeoutMs", name)
+  let t = field("timeoutMs")
+  if t.kind != nvkUndefined:
     case t.kind
     of nvkInt: result.timeoutMs = int(t.i)
     of nvkFloat: result.timeoutMs = int(t.f)
@@ -368,13 +373,13 @@ init proc(module: Module) =
       var url: string
       if not strArg(ctx, args, 0, "fetch", exception, url):
         return nil
-      var optsVal = NimValue(kind: nvkUndefined)
+      var optsObj: JSValueRef = nil
       if int(argumentCount) == 2:
-        if not nimArg(ctx, args, 1, "fetch", exception, optsVal):
+        if not objArg(ctx, args, 1, "fetch", exception, optsObj):
           return nil
       var opts: FetchOpts
       try:
-        opts = parseOpts(optsVal, "fetch", true, true)
+        opts = parseOpts(ctx, optsObj, "fetch", true, true)
       except CatchableError as e:
         throwError(ctx, e.msg, exception)
         return nil
@@ -387,13 +392,13 @@ init proc(module: Module) =
       var url: string
       if not strArg(ctx, args, 0, "get", exception, url):
         return nil
-      var optsVal = NimValue(kind: nvkUndefined)
+      var optsObj: JSValueRef = nil
       if int(argumentCount) == 2:
-        if not nimArg(ctx, args, 1, "get", exception, optsVal):
+        if not objArg(ctx, args, 1, "get", exception, optsObj):
           return nil
       var opts: FetchOpts
       try:
-        opts = parseOpts(optsVal, "get", false, false)
+        opts = parseOpts(ctx, optsObj, "get", false, false)
       except CatchableError as e:
         throwError(ctx, e.msg, exception)
         return nil
@@ -408,13 +413,13 @@ init proc(module: Module) =
         return nil
       if not strArg(ctx, args, 1, "post", exception, body):
         return nil
-      var optsVal = NimValue(kind: nvkUndefined)
+      var optsObj: JSValueRef = nil
       if int(argumentCount) == 3:
-        if not nimArg(ctx, args, 2, "post", exception, optsVal):
+        if not objArg(ctx, args, 2, "post", exception, optsObj):
           return nil
       var opts: FetchOpts
       try:
-        opts = parseOpts(optsVal, "post", false, false)
+        opts = parseOpts(ctx, optsObj, "post", false, false)
       except CatchableError as e:
         throwError(ctx, e.msg, exception)
         return nil

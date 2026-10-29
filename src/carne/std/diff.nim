@@ -18,36 +18,38 @@ import pkg/openparser/diff
 
 import ../bridge
 
-proc readOpts(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
-    n: int; name: string; exception: ptr JSValueRef;
+proc readOpts(ctx: JSContextRef; obj: JSValueRef;
+    name: string; exception: ptr JSValueRef;
     opts: var DiffOptions): bool =
+  ## Reads {context?} lazily; absent and undefined both mean default.
   opts = DiffOptions()
-  var v: NimValue
-  if not nimArg(ctx, args, n, name, exception, v):
+  if obj == nil:
+    return true
+  var err = ""
+  let f = getField(ctx, obj, "context", err)
+  if err != "":
+    throwError(ctx, name & ": options.context " & err, exception)
     return false
-  if v.kind != nvkObject:
-    throwError(ctx, name & ": options must be an object", exception)
-    return false
-  if v.hasKey("context"):
-    let f = v.get("context", name)
-    var c = -1
-    case f.kind
-    of nvkInt:
-      c = int(f.i)
-    of nvkFloat:
-      if f.f != trunc(f.f):
-        throwError(ctx, name & ": options.context must be an integer",
-          exception)
-        return false
-      c = int(f.f)
-    else:
+  var c = DiffContext
+  case f.kind
+  of nvkUndefined:
+    return true
+  of nvkInt:
+    c = int(f.i)
+  of nvkFloat:
+    if f.f != trunc(f.f):
       throwError(ctx, name & ": options.context must be an integer",
         exception)
       return false
-    if c < -1:
-      throwError(ctx, name & ": options.context must be >= -1", exception)
-      return false
-    opts.context = c
+    c = int(f.f)
+  else:
+    throwError(ctx, name & ": options.context must be an integer",
+      exception)
+    return false
+  if c < -1:
+    throwError(ctx, name & ": options.context must be >= -1", exception)
+    return false
+  opts.context = c
   true
 
 proc diffToJson(d: Diff): JsonNode =
@@ -93,7 +95,10 @@ init proc(module: Module) =
         return nil
       var opts: DiffOptions
       if int(argumentCount) == 3:
-        if not readOpts(ctx, args, 2, "diff", exception, opts):
+        var optsObj: JSValueRef
+        if not objArg(ctx, args, 2, "diff", exception, optsObj):
+          return nil
+        if not readOpts(ctx, optsObj, "diff", exception, opts):
           return nil
       else:
         opts = DiffOptions()
@@ -114,7 +119,10 @@ init proc(module: Module) =
         return nil
       var opts: DiffOptions
       if int(argumentCount) == 3:
-        if not readOpts(ctx, args, 2, "unified", exception, opts):
+        var optsObj: JSValueRef
+        if not objArg(ctx, args, 2, "unified", exception, optsObj):
+          return nil
+        if not readOpts(ctx, optsObj, "unified", exception, opts):
           return nil
       else:
         opts = DiffOptions()

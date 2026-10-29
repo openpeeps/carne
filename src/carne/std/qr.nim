@@ -17,28 +17,34 @@ import pkg/openparser/qr/render
 
 import ../bridge
 
-proc ecLevelArg(v: NimValue; name: string): QrEcLevel =
-  ## Reads {ecLevel} from an options object. Raises on anything else.
+proc ecLevelArg(ctx: JSContextRef; obj: JSValueRef;
+    name: string): QrEcLevel =
+  ## Reads {ecLevel?} lazily; absent and undefined both mean default.
+  ## Raises on anything else.
   result = ecMedium
-  if v.kind != nvkObject:
-    raise newException(CatchableError, name & ": options must be an object")
-  if v.hasKey("ecLevel"):
-    let f = v.get("ecLevel", name)
-    if f.kind != nvkString:
-      raise newException(CatchableError,
-        name & ": options.ecLevel must be one of L, M, Q, H")
-    case f.s.toUpperAscii()
-    of "L":
-      result = ecLow
-    of "M":
-      result = ecMedium
-    of "Q":
-      result = ecQuartile
-    of "H":
-      result = ecHigh
-    else:
-      raise newException(CatchableError,
-        name & ": options.ecLevel must be one of L, M, Q, H")
+  if obj == nil:
+    return
+  var err = ""
+  let f = getField(ctx, obj, "ecLevel", err)
+  if err != "":
+    raise newException(CatchableError, name & ": options.ecLevel " & err)
+  if f.kind == nvkUndefined:
+    return
+  if f.kind != nvkString:
+    raise newException(CatchableError,
+      name & ": options.ecLevel must be one of L, M, Q, H")
+  case f.s.toUpperAscii()
+  of "L":
+    result = ecLow
+  of "M":
+    result = ecMedium
+  of "Q":
+    result = ecQuartile
+  of "H":
+    result = ecHigh
+  else:
+    raise newException(CatchableError,
+      name & ": options.ecLevel must be one of L, M, Q, H")
 
 ## Builds the std/qr namespace object.
 init proc(module: Module) =
@@ -53,11 +59,11 @@ init proc(module: Module) =
         return nil
       var level = ecMedium
       if int(argumentCount) == 2:
-        var v: NimValue
-        if not nimArg(ctx, args, 1, "encode", exception, v):
+        var optsObj: JSValueRef
+        if not objArg(ctx, args, 1, "encode", exception, optsObj):
           return nil
         try:
-          level = ecLevelArg(v, "encode")
+          level = ecLevelArg(ctx, optsObj, "encode")
         except CatchableError as e:
           throwError(ctx, e.msg, exception)
           return nil

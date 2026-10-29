@@ -194,20 +194,23 @@ proc doOpen(ctx: JSContextRef; argumentCount: csize_t;
     usage, 2, 2)
   if args == nil:
     return nil
-  var env: NimValue
-  if not nimArg(ctx, args, 0, name, exception, env):
+  var envObj: JSValueRef
+  if not objArg(ctx, args, 0, name, exception, envObj):
     return nil
   var keyHex: string
   if not strArg(ctx, args, 1, name, exception, keyHex):
     return nil
   try:
-    if env.kind != nvkObject:
-      raise newException(ValueError, "envelope must be an object")
-    for field in ["nonce", "mac", "cipher"]:
-      if not env.hasKey(field) or env.get(field, name).kind != nvkString:
+    var err = ""
+    var nonceHex, macHex, cipherHex: string
+    for (field, dst) in [("nonce", addr nonceHex), ("mac", addr macHex),
+        ("cipher", addr cipherHex)]:
+      let f = getField(ctx, envObj, field, err)
+      if err != "":
+        raise newException(ValueError, "envelope." & field & " " & err)
+      if f.kind != nvkString:
         raise newException(ValueError, "envelope needs hex \"" & field & "\"")
-    let nonceHex = env.get("nonce", name).s
-    let macHex = env.get("mac", name).s
+      dst[] = f.s
     if nonceHex.len != 48:
       raise newException(ValueError,
         "envelope.nonce must be 48 hex chars (24 bytes)")
@@ -216,7 +219,7 @@ proc doOpen(ctx: JSContextRef; argumentCount: csize_t;
         "envelope.mac must be 32 hex chars (16 bytes)")
     let msg = SealedMessage(nonce: fromHex[24, uint8](nonceHex),
       mac: fromHex[16, uint8](macHex),
-      cipherText: parseBytes(env.get("cipher", name).s, "envelope.cipher"))
+      cipherText: parseBytes(cipherHex, "envelope.cipher"))
     toJS(ctx, toString(unseal(msg, parseKey32(keyHex))))
   except CatchableError as e:
     throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
