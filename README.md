@@ -12,6 +12,9 @@
   <img src="https://github.com/openpeeps/carne/workflows/test/badge.svg" alt="Github Actions">  <img src="https://github.com/openpeeps/carne/workflows/docs/badge.svg" alt="Github Actions">
 </p>
 
+> [!NOTE]
+> Carne is still experimental...
+
 ## 😍 Key Features
 - JavaScript runtime powered by JavaScriptCore
 - Powerful Standard Library: `env`, `fs`, `crypto` (hash/aead/sign/argon2id), `http`, `path`

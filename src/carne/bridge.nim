@@ -238,6 +238,7 @@ type
     of nvkFunction, nvkSymbol, nvkBigInt: raw*: JSValueRef
 
 const maxNimValueDepth = 64
+const maxNimValueArrayLen = 100_000
 
 proc jsTypeName*(kind: NimValueKind): string =
   ## JS-style type name for error messages.
@@ -303,6 +304,10 @@ proc fromJSImpl(ctx: JSContextRef; v: JSValueRef; depth: int;
       let n = int(JSValueToNumber(ctx, lenV, addr ex2))
       if ex2 != nil or n < 0:
         err = "has an unreadable length"
+        return NimValue(kind: nvkUndefined)
+      if n > maxNimValueArrayLen:
+        err = "array is too large (" & $n & " elements, cap " &
+          $maxNimValueArrayLen & ")"
         return NimValue(kind: nvkUndefined)
       result = NimValue(kind: nvkArray, arr: @[])
       for idx in 0 ..< n:

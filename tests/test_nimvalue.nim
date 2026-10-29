@@ -182,6 +182,24 @@ test "options bags reject arrays":
   except CarneError as e:
     check "expected object" in e.msg
 
+test "fromJS rejects oversized arrays":
+  block:
+    withGlobalContext(ctx):
+      var ex: JSValueRef = nil
+      let v = evalScript(ctx, "new Array(100001)", exception = ex)
+      check ex == nil
+      var err = ""
+      discard fromJS(ctx, v, err)
+      check err == "array is too large (100001 elements, cap 100000)"
+  block:
+    withGlobalContext(ctx):
+      var ex: JSValueRef = nil
+      let v = evalScript(ctx, "[1, 2, 3]", exception = ex)
+      check ex == nil
+      var err = ""
+      check fromJS(ctx, v, err).asArray("t").len == 3
+      check err == ""
+
 test "lazy field access reads single props":
   withGlobalContext(ctx):
     var ex: JSValueRef = nil

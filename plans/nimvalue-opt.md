@@ -31,10 +31,12 @@ snapshots whole — all its keys are consumed). `nil` obj means absent.
 Tests: wide object + `{context: undefined}` + extra keys accepted;
 existing per-module suites must stay green (29 suites).
 
-## Step 2 — array length cap (deferred)
-`fromJS` has a depth cap (64) but no breadth cap. Cap array snapshots
-(e.g. 100k elements) with a clear error. No behavior change for sane
-inputs. Do after Step 1.
+## Step 2 — array length cap (done in `55beb2f`-followup)
+`fromJS` had a depth cap (64) but no breadth cap. Array snapshots now
+reject lengths over `maxNimValueArrayLen` (100_000) with
+"array is too large (N elements, cap 100000)". No behavior change for
+sane inputs. Objects intentionally uncapped (option bags are small;
+revisit with a bench number if a wide-object path ever appears).
 
 ## Step 3 — nothing else (explicit non-goal)
 Primitive fast-paths (`IsString` before `GetType`) save nanoseconds
