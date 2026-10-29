@@ -94,6 +94,7 @@ proc newCarnePkgConfig*(rootPath = "", debug = false,
   result.manifestParser = parsePackageManifest
   result.manifestFinder = findPackageJson
   result.manifestFileName = proc(pkg: string): string = pkgManifestFileName
+  result.requiredManifestFile = some(pkgManifestFileName)
   result.defaultRegistryUrl = pkgRegistryUrl
   result.defaultSourceName = pkgDefaultSourceName
   if ensureSource:

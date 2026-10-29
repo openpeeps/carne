@@ -29,6 +29,7 @@ test "config roots at override and registers source":
   let cfg = newCarnePkgConfig(rootPath = home)
   check cfg.defaultSourceName == "carne"
   check cfg.defaultRegistryUrl == pkgRegistryUrl
+  check cfg.requiredManifestFile == some(pkgManifestFileName)
   var found = false
   for src in cfg.loadSources():
     if src.name == "carne" and src.url == pkgRegistryUrl:
