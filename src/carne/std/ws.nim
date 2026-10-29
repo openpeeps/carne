@@ -2,13 +2,14 @@
 #
 #   const ws = require("std/ws");
 #   const srv = ws.serve(8080, {onMessage: (conn, msg) => conn.send("hi " + msg.data)});
-#   const c = ws.connect("ws://127.0.0.1:8080/chat", {onMessage: (msg) => console.log(msg.data)});
+#   const c = await ws.connect("ws://127.0.0.1:8080/chat");  // -> established handle
 #   c.send("hello");
 #   const c2 = ws.connectSync("ws://127.0.0.1:8080/chat");  // blocks until open
 #   c.close(); ws.close(srv.port);
 #
-# connect is async: it returns a connection handle immediately and the
-# handshake completes on the run's shared powpow loop (no threads), so it
+# connect returns a Promise for the connection handle: `await
+# ws.connect(url[, handlers])` or `ws.connect(url).then(c => ...)`. The
+# handshake runs on the run's shared powpow loop (no threads), so it
 # composes with timers and std/http. connectSync blocks, pumping the same
 # loop until the handshake completes, then returns an established handle.
 # serve borrows the loop and holds it alive until close (Node semantics).
@@ -20,12 +21,14 @@
 # frames are delivered as strings with isBinary: true. wss:// URLs are
 # rejected in v1 (no TLS yet): use ws://.
 #
-# Error reporting follows Node's EventEmitter: an error with no onError
-# handler becomes the run's uncaught error. close() is final: no onClose
-# fires for locally-closed connections, and every form of close is
-# idempotent. Pumping the shared loop inside connectSync may run due
-# timers and settle other in-flight work early; that is inherent to a
-# blocking call on a single-threaded loop.
+# connect() reports handshake failures by rejecting its promise (like
+# std/http fetch); an onError handler fires too when given. Without a
+# promise rejection path (pure handler use with no await/catch), errors
+# with no onError handler become the run's uncaught error. close() is
+# final: no onClose fires for locally-closed connections, and every form
+# of close is idempotent. Pumping the shared loop inside connectSync may
+# run due timers and settle other in-flight work early; that is inherent
+# to a blocking call on a single-threaded loop.
 
 import std/[json, monotimes, strutils, tables, times]
 
@@ -53,6 +56,7 @@ type
     ws: WsConnection
     handle: JSObjectRef
     onOpen, onMessage, onClose, onError: JSObjectRef
+    resolveFn, rejectFn: JSObjectRef
     serverKey: pointer
     closing: bool
     closed: bool
@@ -122,7 +126,8 @@ proc cleanupConn(key: pointer) =
   var e = wsConns[key]
   let c = e.ctx
   let h = e.handle
-  let fns = [e.onOpen, e.onMessage, e.onClose, e.onError]
+  let fns = [e.onOpen, e.onMessage, e.onClose, e.onError,
+    e.resolveFn, e.rejectFn]
   if not e.closed:
     e.closed = true
     wsConns[key] = e
@@ -130,7 +135,33 @@ proc cleanupConn(key: pointer) =
   wsConns.del(key)
   if h != nil:
     JSValueUnprotect(c, h)
-  unprotectHandlers(c, fns[0], fns[1], fns[2], fns[3])
+  unprotectHandlers(c, fns[0], fns[1], fns[2], fns[3], fns[4], fns[5])
+
+proc settleResolve(c: JSContextRef; res, rej: JSObjectRef; val: JSValueRef) =
+  ## Resolves a connect() promise with the handle; settle fns are consumed.
+  if res == nil:
+    return
+  var ex: JSValueRef = nil
+  var a = val
+  discard JSObjectCallAsFunction(c, res, nil, 1, addr a, addr ex)
+  JSValueUnprotect(c, res)
+  if rej != nil:
+    JSValueUnprotect(c, rej)
+
+proc settleReject(c: JSContextRef; res, rej: JSObjectRef; msg: string) =
+  ## Rejects a connect() promise with an Error; settle fns are consumed.
+  if rej == nil:
+    if res != nil:
+      JSValueUnprotect(c, res)
+    return
+  var ex: JSValueRef = nil
+  let msgV = toJS(c, msg)
+  let errObj = JSObjectMakeError(c, 1, unsafeAddr msgV, addr ex)
+  var arg = if errObj != nil: errObj else: msgV
+  discard JSObjectCallAsFunction(c, rej, nil, 1, addr arg, addr ex)
+  if res != nil:
+    JSValueUnprotect(c, res)
+  JSValueUnprotect(c, rej)
 
 proc failAsync(key: pointer; msg: string) =
   ## Terminal pre-open failure on the async path: releases the slot, keeps
@@ -142,10 +173,17 @@ proc failAsync(key: pointer; msg: string) =
     e.sync.done = true
     e.sync.ok = false
     e.sync.msg = msg
+  let c = e.ctx
+  let res = e.resolveFn
+  let rej = e.rejectFn
+  e.resolveFn = nil
+  e.rejectFn = nil
   if not e.closed:
     e.closed = true
     decPending(e.rt)
   wsConns[key] = e
+  if res != nil or rej != nil:
+    settleReject(c, res, rej, "connect: " & msg)
 
 proc wsOnOpen(ws: WsConnection) {.gcsafe.} =
   ## powpow dispatch: loop thread is the JS thread (borrowed loop).
@@ -159,7 +197,15 @@ proc wsOnOpen(ws: WsConnection) {.gcsafe.} =
       return
     var e = wsConns[key]
     if e.closing:
-      # close() was called while the handshake was in flight.
+      # close() was called while the handshake was in flight. Clear the
+      # settle fns first so cleanupConn does not unprotect them out from
+      # under the settle below.
+      let c = e.ctx
+      let res = e.resolveFn
+      let rej = e.rejectFn
+      e.resolveFn = nil
+      e.rejectFn = nil
+      wsConns[key] = e
       cleanupConn(key)
       try:
         ws.closeWs(1000, "")
@@ -169,6 +215,8 @@ proc wsOnOpen(ws: WsConnection) {.gcsafe.} =
         e.sync.done = true
         e.sync.ok = false
         e.sync.msg = "connection closed"
+      elif res != nil or rej != nil:
+        settleReject(c, res, rej, "connect: connection closed")
       return
     if e.sync != nil and not e.sync.done:
       e.sync.done = true
@@ -176,7 +224,15 @@ proc wsOnOpen(ws: WsConnection) {.gcsafe.} =
     # Ready for send: client conns open here; server-side entries are
     # created open (see serve).
     e.openOk = true
+    let c = e.ctx
+    let res = e.resolveFn
+    let rej = e.rejectFn
+    let handle = e.handle
+    e.resolveFn = nil
+    e.rejectFn = nil
     wsConns[key] = e
+    if res != nil or rej != nil:
+      settleResolve(c, res, rej, handle)
     if e.serverKey == nil:
       fireCb(e.ctx, e.rt, e.onOpen)
     else:
@@ -210,24 +266,33 @@ proc wsOnClose(ws: WsConnection; code: int; reason: string) {.gcsafe.} =
     let key = cast[pointer](ws)
     if not wsConns.hasKey(key):
       return
-    let e = wsConns[key]
-    let wasClosing = e.closing
-    let sync = e.sync
+    var ne = wsConns[key]
+    let wasClosing = ne.closing
+    let sync = ne.sync
+    let c = ne.ctx
+    let res = ne.resolveFn
+    let rej = ne.rejectFn
+    ne.resolveFn = nil
+    ne.rejectFn = nil
+    wsConns[key] = ne
     cleanupConn(key)
     if sync != nil and not sync.done:
       sync.done = true
       sync.ok = false
       sync.msg = "connection closed before open"
       return
+    if res != nil or rej != nil:
+      settleReject(c, res, rej, "connect: connection closed before open")
+      return
     if wasClosing:
       return
-    let ev = jsonToJS(e.ctx, %*{"code": code, "reason": reason})
+    let ev = jsonToJS(ne.ctx, %*{"code": code, "reason": reason})
     if ev == nil:
       return
-    if e.serverKey == nil:
-      fireCb(e.ctx, e.rt, e.onClose, ev)
+    if ne.serverKey == nil:
+      fireCb(ne.ctx, ne.rt, ne.onClose, ev)
     else:
-      fireCb(e.ctx, e.rt, e.onClose, e.handle, ev)
+      fireCb(ne.ctx, ne.rt, ne.onClose, ne.handle, ev)
 
 proc wsOnError(ws: WsConnection; err: string) {.gcsafe.} =
   {.cast(gcsafe).}:
@@ -236,11 +301,19 @@ proc wsOnError(ws: WsConnection; err: string) {.gcsafe.} =
       return
     var e = wsConns[key]
     if e.closing:
+      let c = e.ctx
+      let res = e.resolveFn
+      let rej = e.rejectFn
+      e.resolveFn = nil
+      e.rejectFn = nil
+      wsConns[key] = e
       cleanupConn(key)
       if e.sync != nil and not e.sync.done:
         e.sync.done = true
         e.sync.ok = false
         e.sync.msg = err
+      elif res != nil or rej != nil:
+        settleReject(c, res, rej, "connect: " & err)
       return
     if not ws.isEstablished():
       # Pre-open failure (DNS, TCP refused, bad handshake): terminal.
@@ -249,6 +322,7 @@ proc wsOnError(ws: WsConnection; err: string) {.gcsafe.} =
       let r = e.rt
       let sk = e.serverKey
       let errFn = e.onError
+      let hadPromise = e.resolveFn != nil or e.rejectFn != nil
       failAsync(key, err)
       if sync != nil:
         return
@@ -260,8 +334,9 @@ proc wsOnError(ws: WsConnection; err: string) {.gcsafe.} =
           fireCb(c, r, errFn, ev)
         else:
           fireCb(c, r, errFn, wsConns[key].handle, ev)
-      elif r.uncaught.len == 0:
-        # Node's unhandled 'error' throws: no handler means uncaught.
+      elif not hadPromise and r.uncaught.len == 0:
+        # No promise and no handler: nowhere else to report (with a
+        # promise, the rejection carries it, like std/http fetch).
         r.uncaught = "ws: " & err
         r.exitCode = 1
       return
@@ -394,8 +469,17 @@ proc connCloseImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
   if e.ws == nil or e.ws.conn == nil:
     # Nothing on the wire yet: no close event will ever arrive, so release
     # now. A late loop.connect still lands safely: its dispatcher finds a
-    # missing entry and shuts the conn down.
+    # missing entry and shuts the conn down. A pending connect() promise
+    # rejects: the user closed before open.
+    let c = e.ctx
+    let res = e.resolveFn
+    let rej = e.rejectFn
+    e.resolveFn = nil
+    e.rejectFn = nil
+    wsConns[key] = e
     cleanupConn(key)
+    if res != nil or rej != nil:
+      settleReject(c, res, rej, "connect: connection closed")
     return toJS(ctx, true)
   e.closing = true
   wsConns[key] = e
@@ -422,18 +506,22 @@ proc makeConnHandle(ctx: JSContextRef; exception: ptr JSValueRef): JSObjectRef =
 
 proc insertConn(ctx: JSContextRef; rt: Runtime; ws: WsConnection;
     serverKey: pointer; onOpen, onMessage, onClose, onError: JSObjectRef;
-    sync: SyncState; exception: ptr JSValueRef): JSObjectRef =
+    resolveFn, rejectFn: JSObjectRef; sync: SyncState;
+    exception: ptr JSValueRef): JSObjectRef =
   ## Builds the handle, protects everything, registers the entry and holds
-  ## one pending slot. Nil on failure (handlers already unprotected).
+  ## one pending slot. Settle fns arrive pre-protected (ownership moves
+  ## here). Nil on failure (everything already unprotected).
   let handle = makeConnHandle(ctx, exception)
   if handle == nil:
-    unprotectHandlers(ctx, onOpen, onMessage, onClose, onError)
+    unprotectHandlers(ctx, onOpen, onMessage, onClose, onError,
+      resolveFn, rejectFn)
     return nil
   JSValueProtect(ctx, handle)
   let key = cast[pointer](ws)
   wsConns[key] = ConnEntry(ctx: ctx, rt: rt, ws: ws, handle: handle,
     onOpen: onOpen, onMessage: onMessage, onClose: onClose,
-    onError: onError, serverKey: serverKey, closing: false, closed: false,
+    onError: onError, resolveFn: resolveFn, rejectFn: rejectFn,
+    serverKey: serverKey, closing: false, closed: false,
     openOk: false, sync: sync)
   inc rt.pending
   handle
@@ -455,16 +543,19 @@ proc parseWsTarget(url: string; name: string): tuple[host: string, port: int,
     raise newException(CatchableError, name & ": " & e.msg)
 
 proc startClient(ctx: JSContextRef; rt: Runtime; url: string; name: string;
-    onOpen, onMessage, onClose, onError: JSObjectRef; sync: SyncState;
+    onOpen, onMessage, onClose, onError: JSObjectRef;
+    resolveFn, rejectFn: JSObjectRef; sync: SyncState;
     exception: ptr JSValueRef): JSObjectRef =
   ## Shared connect core: parses the URL, arms connectWs on the run's loop,
-  ## registers the entry. Handlers are consumed (protected or freed) here.
+  ## registers the entry. Handlers and settle fns are consumed (protected
+  ## or freed) here.
   var host, path: string
   var port: int
   try:
     (host, port, path) = parseWsTarget(url, name)
   except CatchableError as e:
-    unprotectHandlers(ctx, onOpen, onMessage, onClose, onError)
+    unprotectHandlers(ctx, onOpen, onMessage, onClose, onError,
+      resolveFn, rejectFn)
     throwError(ctx, e.msg, exception)
     return nil
   let loop = rt.ensureLoop()
@@ -474,12 +565,12 @@ proc startClient(ctx: JSContextRef; rt: Runtime; url: string; name: string;
       onMessage = wsOnMessage, onClose = wsOnClose, onError = wsOnError,
       handshakeTimeoutMs = DefaultWsTimeoutMs)
   except CatchableError as e:
-    unprotectHandlers(ctx, onOpen, onMessage, onClose, onError)
+    unprotectHandlers(ctx, onOpen, onMessage, onClose, onError,
+      resolveFn, rejectFn)
     throwError(ctx, name & ": " & e.msg, exception)
     return nil
-  let h = insertConn(ctx, rt, ws, nil, onOpen, onMessage, onClose,
-    onError, sync, exception)
-  h
+  insertConn(ctx, rt, ws, nil, onOpen, onMessage, onClose, onError,
+    resolveFn, rejectFn, sync, exception)
 
 proc queueServerClose(rt: Runtime; server: WsServer) =
   ## Finishes a ws.close(port) whose caller sits inside a user callback:
@@ -651,7 +742,7 @@ init proc(module: Module) =
       returnJson(ctx, %*{"port": port, "host": host}, "serve", exception)
 
     module.registerFn connect:
-      ## ws.connect(url[, handlers]) -> conn (async: handshake on the loop)
+      ## ws.connect(url[, handlers]) -> Promise<conn> (handshake on the loop)
       if not checkArity(argumentCount, 1, 2, "connect", ctx, exception):
         return nil
       var url: string
@@ -665,9 +756,24 @@ init proc(module: Module) =
       if not readHandlers(ctx, handlersObj, "connect", exception, onOpen,
           onMessage, onClose, onError):
         return nil
+      var resolveFn, rejectFn: JSObjectRef
+      var mkEx: JSValueRef = nil
+      let promise = JSObjectMakeDeferredPromise(ctx, addr resolveFn,
+        addr rejectFn, addr mkEx)
+      if promise == nil or mkEx != nil:
+        unprotectHandlers(ctx, onOpen, onMessage, onClose, onError)
+        throwError(ctx, "connect: could not create promise", exception)
+        return nil
+      JSValueProtect(ctx, resolveFn)
+      JSValueProtect(ctx, rejectFn)
       let rt = currentRt()
-      startClient(ctx, rt, url, "connect", onOpen, onMessage, onClose,
-        onError, nil, exception)
+      let handle = startClient(ctx, rt, url, "connect", onOpen, onMessage,
+        onClose, onError, resolveFn, rejectFn, nil, exception)
+      if handle == nil:
+        JSValueUnprotect(ctx, resolveFn)
+        JSValueUnprotect(ctx, rejectFn)
+        return nil
+      promise
 
     module.registerFn connectSync:
       ## ws.connectSync(url[, {timeoutMs?, onOpen?, ...}]) -> established conn
@@ -708,7 +814,7 @@ init proc(module: Module) =
       let rt = currentRt()
       let st = SyncState(done: false, ok: false, msg: "")
       let handle = startClient(ctx, rt, url, "connectSync", onOpen,
-        onMessage, onClose, onError, st, exception)
+        onMessage, onClose, onError, nil, nil, st, exception)
       if handle == nil:
         return nil
       let loop = rt.ensureLoop()

@@ -418,18 +418,17 @@ const srv = ws.serve(8080, {
   onMessage: (conn, msg) => conn.send("hi " + msg.data)
 });
 
-// Async client (handshake on the loop)
-new Promise((resolve) => {
-  const c = ws.connect("ws://127.0.0.1:8080/chat", {
-    onOpen: () => c.send("ada"),
+// Async client (handshake on the loop; wrap in an async IIFE)
+(async () => {
+  const c = await ws.connect("ws://127.0.0.1:8080/chat", {
     onMessage: (msg) => {
       console.log(msg.data); // hi ada
       c.close();
       ws.close(srv.port);
-      resolve();
     }
   });
-});
+  c.send("ada");
+})();
 
 // Sync client (blocks until open)
 const c2 = ws.connectSync("ws://127.0.0.1:8080/chat");
@@ -437,12 +436,13 @@ c2.send("sync");
 c2.close();
 ```
 
-`connect(url[, handlers])` returns a `{send, close}` handle immediately;
-`connectSync(url[, {timeoutMs, ...handlers}])` pumps the same loop until
-open (default 10s). Server callbacks get `(conn, payload)`, client
-callbacks just `(payload)`; messages are `{data, isBinary}`, closes
-`{code, reason}`, errors `{message}`. An error with no `onError` handler
-is uncaught (Node rules). `ws://` only in v1, no TLS yet.
+`connect(url[, handlers])` returns a Promise for the `{send, close}`
+handle (`await ws.connect(...)` or `.then(...)`); `connectSync(url[,
+{timeoutMs, ...handlers}])` pumps the same loop until open (default 10s).
+Server callbacks get `(conn, payload)`, client callbacks just `(payload)`;
+messages are `{data, isBinary}`, closes `{code, reason}`, errors
+`{message}`. Handshake failures reject the promise (an `onError` handler
+fires too when given). `ws://` only in v1, no TLS yet.
 
 ## Roadmap
 - [x] JSC runtime: console/process/require/timers CLI

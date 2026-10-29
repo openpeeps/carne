@@ -6,19 +6,37 @@ import carne/std/ws
 
 registerStd("std/ws", ws.install)
 
-test "async echo roundtrip":
+test "await connect echo roundtrip":
   check runCode(
     "const ws = require('std/ws'); " &
     "const log = []; " &
     "const srv = ws.serve(18201, {onMessage: (c, m) => " &
     "{ log.push('srv:' + m.data); c.send('echo:' + m.data); }}); " &
-    "new Promise((resolve, reject) => { " &
-    "const c = ws.connect('ws://127.0.0.1:18201/chat', { " &
-    "onOpen: () => c.send('hello'), " &
+    "let done; " &
+    "const gate = new Promise((r) => { done = r; }); " &
+    "(async () => { " &
+    "const c = await ws.connect('ws://127.0.0.1:18201/chat', { " &
+    "onOpen: () => log.push('open'), " &
     "onMessage: (m) => { log.push('cli:' + m.data + ':' + m.isBinary); " &
-    "c.close(); ws.close(srv.port); resolve(log.join(',')); }, " &
-    "onError: (e) => reject(new Error('conn:' + e.message))}); });") ==
-    "srv:hello,cli:echo:hello:false"
+    "c.close(); ws.close(srv.port); done(log.join(',')); }, " &
+    "onError: (e) => { throw new Error('conn:' + e.message); }}); " &
+    "c.send('hello'); })(); " &
+    "gate") ==
+    "open,srv:hello,cli:echo:hello:false"
+
+test "connect then style resolves to the handle":
+  check runCode(
+    "const ws = require('std/ws'); " &
+    "const srv = ws.serve(18210, {onMessage: (c, m) => " &
+    "c.send('back:' + m.data)}); " &
+    "new Promise((resolve, reject) => { " &
+    "let cc; " &
+    "ws.connect('ws://127.0.0.1:18210/', { " &
+    "onMessage: (m) => { cc.close(); ws.close(srv.port); " &
+    "resolve(m.data + ':' + (typeof cc.send)); }, " &
+    "onError: (e) => reject(new Error(e.message))}) " &
+    ".then((c) => { cc = c; c.send('hi'); }); });") ==
+    "back:hi:function"
 
 test "connectSync echo roundtrip":
   check runCode(
@@ -50,9 +68,11 @@ test "server observes open and remote close with code":
     "ws.close(srv.port); finish(log.join(',')); }}); " &
     "let finish; " &
     "const p = new Promise((r) => { finish = r; }); " &
-    "const c = ws.connect('ws://127.0.0.1:18204/', { " &
-    "onOpen: () => c.send('x'), " &
-    "onMessage: (m) => { log.push('got:' + m.data); c.close(1000, 'bye'); }}); " &
+    "(async () => { " &
+    "const c = await ws.connect('ws://127.0.0.1:18204/', " &
+    "{onMessage: (m) => { log.push('got:' + m.data); " &
+    "c.close(1000, 'bye'); }}); " &
+    "c.send('x'); })(); " &
     "p") == "open,msg:x,got:back,closed:1000:bye"
 
 test "send on closed connection throws":
@@ -69,16 +89,19 @@ test "connectSync to refused port throws":
     discard runCode(
       "require('std/ws').connectSync('ws://127.0.0.1:18997/');")
 
-test "async connect error surfaces via onError":
+test "connect promise rejects on refused port":
   check runCode(
     "const ws = require('std/ws'); " &
-    "new Promise((resolve) => { " &
-    "ws.connect('ws://127.0.0.1:18996/', " &
-    "{onError: (e) => resolve(e.message.length > 0)}); });") == "true"
+    "(async () => { " &
+    "try { await ws.connect('ws://127.0.0.1:18996/'); return 'resolved?!'; } " &
+    "catch (e) { return 'rejected:' + (e.message.length > 0); } })();") ==
+    "rejected:true"
 
 test "wss URLs are rejected":
   expect CarneError:
-    discard runCode("require('std/ws').connect('wss://example.com/chat');")
+    discard runCode(
+      "(async () => { await require('std/ws')" &
+      ".connect('wss://example.com/chat'); })();")
   expect CarneError:
     discard runCode(
       "require('std/ws').connectSync('wss://example.com/chat');")
@@ -100,7 +123,8 @@ test "connect validates url and arity":
   expect CarneError:
     discard runCode("require('std/ws').connect(42);")
   expect CarneError:
-    discard runCode("require('std/ws').connect('http://x/');")
+    discard runCode(
+      "(async () => { await require('std/ws').connect('http://x/'); })();")
   expect CarneError:
     discard runCode(
       "require('std/ws').connect('ws://127.0.0.1:18207/', 42);")
