@@ -11,6 +11,7 @@
 # std/ws append theirs on import); empty means nothing to clean up.
 
 import std/tables
+import std/strutils
 
 import javascriptcore
 
@@ -18,8 +19,14 @@ import ./bridge
 
 type
   Installer* = proc(ctx: JSContextRef; rt: Runtime): JSObjectRef
+  PkgRequireHook* = proc(ctx: JSContextRef; spec: string;
+    exception: ptr JSValueRef): JSValueRef {.closure.}
 
 var installers = initTable[string, Installer]()
+
+var pkgRequireHook*: PkgRequireHook = nil
+  ## File-backed `require("pkg/...")` and relative requires go through
+  ## this hook (set by pkg/loader). Nil in tests that do not need it.
 
 var onTeardown*: seq[proc()] = @[]
 
@@ -41,6 +48,13 @@ proc requireImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
   let rt = currentRt()
   if rt.instances.hasKey(spec):
     return rt.instances[spec]
+  if spec.startsWith("pkg/") or spec.startsWith("./") or
+      spec.startsWith("../") or spec == "." or spec == "..":
+    if pkgRequireHook == nil:
+      throwError(ctx, "require: package imports need pkg/loader (" & spec & ")",
+        exception)
+      return nil
+    return pkgRequireHook(ctx, spec, exception)
   if not installers.hasKey(spec):
     throwError(ctx, "require: unknown module \"" & spec & "\"", exception)
     return nil

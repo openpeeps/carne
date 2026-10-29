@@ -121,15 +121,18 @@ proc mark(prof: bool; pt: var MonoTime; phase: string) =
     pt = now
 
 proc runCodeEx*(code: string; sourceURL = "script.js";
-    argv: seq[string] = @[]): tuple[output: string, code: int] =
+    argv: seq[string] = @[]; baseDir = ""): tuple[output: string, code: int] =
   ## Evaluates `code`, drains async work, returns the completion value
   ## ("" for undefined) and the process exit code. Raises CarneError on
   ## JS exceptions (eval-time or uncaught async). The event loop is
-  ## created lazily: pure-sync scripts never pay for it.
+  ## created lazily: pure-sync scripts never pay for it. `baseDir` seeds
+  ## relative `require("./...")` for file-backed runs (see runFileEx).
   let rt = Runtime(ctx: nil, argv: argv, loop: nil, pending: 0,
     exitRequested: false, exitCode: 0, uncaught: "",
-    instances: initTable[string, JSObjectRef](), timerSeq: 0,
-    timers: initTable[int, TimerEntry]())
+    instances: initTable[string, JSObjectRef](), moduleStack: @[],
+    timerSeq: 0, timers: initTable[int, TimerEntry]())
+  if baseDir.len > 0:
+    rt.moduleStack.add(baseDir)
   withGlobalContext(ctx):
     rt.ctx = ctx
     setCurrentRt(rt)
@@ -211,7 +214,8 @@ proc runFileEx*(path: string;
   ## ["carne", path, extraArgs...]. Raises CarneError / IOError.
   let code = readFile(path)
   let argv = @["carne", path] & extraArgs
-  runCodeEx(code, sourceURL = path, argv = argv)
+  runCodeEx(code, sourceURL = path, argv = argv,
+    baseDir = path.absolutePath.parentDir())
 
 proc runFile*(path: string; extraArgs: seq[string] = @[]): string =
   ## Reads `path` and evaluates it. Raises CarneError / IOError.

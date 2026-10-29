@@ -104,6 +104,27 @@ and npm-style sources:
 > bare package name currently 404. Until it exists, install from git
 > URLs or `develop` locally. See Roadmap.
 
+### Package imports
+Installed packages load through `require("pkg/<name>")` as CommonJS:
+entry resolution reads the `exports` map root first, then `main`
+(`index.js`, `src/index.js`, `<name>.js` fallbacks). A `@version`
+suffix pins an installed version, `pkg/<name>/sub/path` reaches
+inside, and `./...` requires work between package files (and from
+`carne run` scripts, relative to the script).
+
+```js
+const demo = require("pkg/carne_demo_pkg");
+console.log(demo.hello("ada")); // hi ada
+```
+
+A `@version` suffix pins an installed version
+(`require("pkg/greet@0.1.0")`), and `pkg/<name>/sub/path` reaches
+inside a package.
+
+Only CommonJS v1: ESM (`import`/`export`) packages fail with a clear
+error, as do packages with no loadable entry. Use an absolute path
+with `carne pkg develop` (a relative path links the wrong directory).
+
 ## Standard Library
 
 All modules load lazily via the global `require("std/<name>")`,

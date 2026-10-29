@@ -247,3 +247,27 @@ proc manifestMain*(m: Manifest): string =
   if v.kind != JString:
     return ""
   v.getStr()
+
+proc manifestExportsEntry*(m: Manifest): string =
+  ## The root `"."` entry of the manifest `exports` map, "" when absent.
+  ## A string maps directly; an object resolves the `default` condition,
+  ## then `node`. Anything fancier (nested conditions, patterns) is v1
+  ## out of scope.
+  if m.extra == nil or m.extra.kind != JObject:
+    return ""
+  if not m.extra.hasKey("exports"):
+    return ""
+  let ex = m.extra["exports"]
+  if ex.kind == JString:
+    return ex.getStr()
+  if ex.kind != JObject or not ex.hasKey("."):
+    return ""
+  let dot = ex["."]
+  if dot.kind == JString:
+    return dot.getStr()
+  if dot.kind != JObject:
+    return ""
+  for cond in ["default", "node"]:
+    if dot.hasKey(cond) and dot[cond].kind == JString:
+      return dot[cond].getStr()
+  ""

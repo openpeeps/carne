@@ -45,6 +45,7 @@ type
     exitCode*: int
     uncaught*: string
     instances*: Table[string, JSObjectRef]
+    moduleStack*: seq[string]
     timerSeq*: int
     timers*: Table[int, TimerEntry]
     promiseSettled*: bool

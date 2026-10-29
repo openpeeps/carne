@@ -12,9 +12,11 @@ when isMainModule:
   import ./carne/cli
   import ./carne/std/all
   import ./carne/pkg/pkgman
+  import ./carne/pkg/loader
 
   proc runScriptFile(filePath: string; extraArgs: seq[string]): int =
     ## Execute JS from a file
+    initPkgLoaderLazy()
     try:
       let res = runFileEx(filePath, extraArgs)
       return res.code

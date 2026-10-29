@@ -198,13 +198,23 @@ proc firstExisting(paths: varargs[string]): string =
   ""
 
 proc packageEntryPoint*(cfg: DatpkgrConfig, root, name: string): string =
-  ## Absolute path of a package's entry file: manifest `main` when set,
-  ## else `index.js`, `src/index.js`, `<name>.js` - first hit wins,
+  ## Absolute path of a package's entry file: the `exports` map root
+  ## (Node parity: it wins over `main`), then manifest `main`, then
+  ## `index.js`, `src/index.js`, `<name>.js` - first hit wins,
   ## "" when nothing exists.
   let mf = cfg.findManifestInDir(root)
   if mf.len > 0:
     try:
       let m = cfg.parseManifest(readFile(mf), mf)
+      let exp = m.manifestExportsEntry()
+      if exp.len > 0:
+        var p = exp
+        while p.startsWith("./"):
+          p = p[2 .. ^1]
+        if not p.startsWith("..") and not p.isAbsolute:
+          let hit = firstExisting(root / p)
+          if hit.len > 0:
+            return hit
       let main = m.manifestMain()
       if main.len > 0:
         let hit = firstExisting(root / main)
@@ -216,10 +226,11 @@ proc packageEntryPoint*(cfg: DatpkgrConfig, root, name: string): string =
     root / name & ".js")
 
 proc resolvePkgImport*(cfg: DatpkgrConfig,
-    spec: string): Option[string] =
+    spec: string; preferRef = ""): Option[string] =
   ## Map `pkg/<name>` (or `pkg/<name>/sub/path`) to an absolute script
   ## path, none when unresolvable. Develop checkouts win automatically
-  ## via `resolveInstalledPath`. `..` escapes are rejected.
+  ## via `resolveInstalledPath`. `..` escapes are rejected. `preferRef`
+  ## pins an exact installed version/ref instead of the default pick.
   const prefix = "pkg/"
   if not spec.startsWith(prefix):
     return none(string)
@@ -231,7 +242,7 @@ proc resolvePkgImport*(cfg: DatpkgrConfig,
   let rest = if slash < 0: "" else: tail[slash + 1 .. ^1]
   if name.len == 0 or name == "." or name == "..":
     return none(string)
-  let root = cfg.resolveInstalledPath(name, "")
+  let root = cfg.resolveInstalledPath(name, preferRef)
   if root.len == 0 or not dirExists(root):
     return none(string)
   if rest.len == 0:
