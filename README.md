@@ -23,8 +23,9 @@
 ## About
 A JavaScript runtime based on JavaScriptCore and Nim. No drama, no overhype. With a rich
 standard library, so you don't need npm anymore! Still, it ships with an efficient package manager that
-abolishes `node_modules` and keeps dependencies in one shared global store instead. Carne is not a
-drop-in replacement for Node.js, Bun or Deno, instead it is a runtime with an opinion: most scripts
+abolishes `node_modules` and keeps dependencies in one shared global store instead.
+
+Carne is not a drop-in replacement for Node.js, Bun or Deno, instead it is a runtime with an opinion: most scripts
 should not need a dependency at all. It trades the npm ocean for a standard library that covers
 everyday work (files, formats, feeds, SQL, crypto, QR, HTTP) out of the box, starts in ~8 ms on the back
 of JavaScriptCore, and stays ~6k lines of Nim, small enough to read in an afternoon.
