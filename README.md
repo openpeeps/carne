@@ -78,7 +78,26 @@ Packages
 ```
 
 ## Package manager
-This is a DFS (depth-first search) package manager that currently points to nowhere. Built using [pkg/datpkgr](https://github.com/openpeeps/datpkgr), the same engine used at [tim](https://github.com/openpeeps/tim), [clue](https://github.com/openpeeps/clue), [bowdy](https://github.com/openpeeps/bowdy).
+A DFS (depth-first search) package manager with one shared global store
+(`~/.carne`, no `node_modules`), built on
+[pkg/datpkgr](https://github.com/openpeeps/datpkgr), the same engine used
+at [tim](https://github.com/openpeeps/tim),
+[clue](https://github.com/openpeeps/clue),
+[bowdy](https://github.com/openpeeps/bowdy). It installs from both git
+and npm-style sources:
+
+- `carne pkg install <git-url>` (or `--url=...` to pin a source URL):
+  `git+`/`git://` transports, `github:`/`gitlab:`/`bitbucket:`
+  shorthands, `git@` and `.git` URLs. Works today.
+- `carne pkg install <name>[@range]`, `npm:name@range` aliases:
+  resolved through the package registry.
+- `carne pkg develop <path>`: editable installs from a local directory.
+- `remove`, `update`, `list`, `prune`, `refresh` manage the store.
+
+> [!NOTE]
+> The public registry (`carne/pkgs`) is not set up yet, so installs by
+> bare package name currently 404. Until it exists, install from git
+> URLs or `develop` locally. See Roadmap.
 
 ## Standard Library
 
