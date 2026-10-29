@@ -10,7 +10,7 @@
 # spans are intra-line changed byte ranges for highlighting. Both
 # functions take an optional {context} options object (default 3).
 
-import std/[json, strutils]
+import std/[json, math, strutils]
 
 import javascriptcore
 
@@ -22,20 +22,28 @@ proc readOpts(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     n: int; name: string; exception: ptr JSValueRef;
     opts: var DiffOptions): bool =
   opts = DiffOptions()
-  var err = ""
-  let node = jsToJson(ctx, args[n], err)
-  if node == nil:
-    throwError(ctx, name & ": options " & err, exception)
+  var v: NimValue
+  if not nimArg(ctx, args, n, name, exception, v):
     return false
-  if node.kind != JObject:
+  if v.kind != nvkObject:
     throwError(ctx, name & ": options must be an object", exception)
     return false
-  if node.hasKey("context"):
-    if node["context"].kind != JInt:
+  if v.hasKey("context"):
+    let f = v.get("context", name)
+    var c = -1
+    case f.kind
+    of nvkInt:
+      c = int(f.i)
+    of nvkFloat:
+      if f.f != trunc(f.f):
+        throwError(ctx, name & ": options.context must be an integer",
+          exception)
+        return false
+      c = int(f.f)
+    else:
       throwError(ctx, name & ": options.context must be an integer",
         exception)
       return false
-    let c = node["context"].getInt()
     if c < -1:
       throwError(ctx, name & ": options.context must be >= -1", exception)
       return false

@@ -61,8 +61,12 @@ proc scheduleTimer(ctx: JSContextRef; function: JSObjectRef;
       $int(argumentCount), exception)
     return nil
   let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-  if not JSObjectIsFunction(ctx, args[0]):
-    throwError(ctx, name & ": first argument is not a function", exception)
+  var fnVal: NimValue
+  if not nimArg(ctx, args, 0, name, exception, fnVal):
+    return nil
+  if fnVal.kind != nvkFunction:
+    throwError(ctx, name & ": first argument is not a function, got " &
+      jsTypeName(fnVal.kind), exception)
     return nil
   var delay = 0.0
   if not numArg(ctx, args, 1, name, exception, delay):

@@ -50,8 +50,8 @@ init proc(module: Module) =
       if n >= 1 and not strArg(ctx, args, 0, "load", exception, path):
         return nil
       var override = false
-      if n >= 2:
-        override = JSValueToBoolean(ctx, args[1])
+      if n >= 2 and not boolArg(ctx, args, 1, "load", exception, override):
+        return nil
       try:
         loadDotenv(path, override)
       except CatchableError as e:

@@ -17,18 +17,17 @@ import pkg/openparser/qr/render
 
 import ../bridge
 
-proc ecLevelArg(node: JsonNode; name: string): QrEcLevel =
+proc ecLevelArg(v: NimValue; name: string): QrEcLevel =
   ## Reads {ecLevel} from an options object. Raises on anything else.
   result = ecMedium
-  if node == nil:
-    return
-  if node.kind != JObject:
+  if v.kind != nvkObject:
     raise newException(CatchableError, name & ": options must be an object")
-  if node.hasKey("ecLevel"):
-    if node["ecLevel"].kind != JString:
+  if v.hasKey("ecLevel"):
+    let f = v.get("ecLevel", name)
+    if f.kind != nvkString:
       raise newException(CatchableError,
         name & ": options.ecLevel must be one of L, M, Q, H")
-    case node["ecLevel"].getStr().toUpperAscii()
+    case f.s.toUpperAscii()
     of "L":
       result = ecLow
     of "M":
@@ -54,13 +53,11 @@ init proc(module: Module) =
         return nil
       var level = ecMedium
       if int(argumentCount) == 2:
-        var err = ""
-        let node = jsToJson(ctx, args[1], err)
-        if node == nil:
-          throwError(ctx, "encode: options " & err, exception)
+        var v: NimValue
+        if not nimArg(ctx, args, 1, "encode", exception, v):
           return nil
         try:
-          level = ecLevelArg(node, "encode")
+          level = ecLevelArg(v, "encode")
         except CatchableError as e:
           throwError(ctx, e.msg, exception)
           return nil

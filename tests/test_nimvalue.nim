@@ -138,3 +138,29 @@ test "sql rejects non-strings with a type error":
     fail()
   except CarneError as e:
     check "expected string" in e.msg
+
+test "setTimeout with a non-function throws instead of crashing":
+  try:
+    discard runCode("setTimeout(42, 10)")
+    fail()
+  except CarneError as e:
+    check "not a function" in e.msg
+
+test "serve with a non-function handler throws instead of crashing":
+  try:
+    discard runCode("require('std/http').serve(18301, 42)")
+    fail()
+  except CarneError as e:
+    check "not a function" in e.msg
+
+test "strict scalars reject mistyped args":
+  try:
+    discard runCode("require('std/env').getenv(42)")
+    fail()
+  except CarneError as e:
+    check "expected string" in e.msg
+  try:
+    discard runCode("require('std/env').exit('x')")
+    fail()
+  except CarneError as e:
+    check "expected number" in e.msg

@@ -81,48 +81,48 @@ proc methodToString(m: HttpMethod): string =
   of HttpPatch: "PATCH"
   else: ($m)[4 .. ^1].toUpperAscii()
 
-proc parseOpts(node: JsonNode; name: string; allowMethod,
+proc parseOpts(v: NimValue; name: string; allowMethod,
     allowBody: bool): FetchOpts =
   ## Reads {method?, headers?, body?, timeoutMs?}. Raises on anything
   ## else (callers turn it into a sync JS throw).
   result = FetchOpts(meth: HttpGet, headers: @[], body: "", timeoutMs: -1)
-  if node == nil:
+  if v.kind == nvkUndefined:
     return
-  if node.kind != JObject:
+  if v.kind != nvkObject:
     raise newException(CatchableError, name & ": options must be an object")
-  if node.hasKey("method"):
+  if v.hasKey("method"):
     if not allowMethod:
       raise newException(CatchableError,
         name & ": method is fixed here, use fetch for full control")
-    let m = node["method"]
-    if m.kind != JString:
+    let m = v.get("method", name)
+    if m.kind != nvkString:
       raise newException(CatchableError,
         name & ": options.method must be a string")
-    result.meth = methodFromString(m.getStr(), name)
-  if node.hasKey("body"):
+    result.meth = methodFromString(m.s, name)
+  if v.hasKey("body"):
     if not allowBody:
       raise newException(CatchableError,
         name & ": body is fixed here, use fetch for full control")
-    let b = node["body"]
-    if b.kind != JString:
+    let b = v.get("body", name)
+    if b.kind != nvkString:
       raise newException(CatchableError,
         name & ": options.body must be a string")
-    result.body = b.getStr()
-  if node.hasKey("headers"):
-    let h = node["headers"]
-    if h.kind != JObject:
+    result.body = b.s
+  if v.hasKey("headers"):
+    let h = v.get("headers", name)
+    if h.kind != nvkObject:
       raise newException(CatchableError,
         name & ": options.headers must be an object")
-    for k, v in h.pairs:
-      if v.kind != JString:
+    for k, hv in h.obj.pairs:
+      if hv.kind != nvkString:
         raise newException(CatchableError,
           name & ": header \"" & k & "\" must be a string")
-      result.headers.add((k, v.getStr()))
-  if node.hasKey("timeoutMs"):
-    let t = node["timeoutMs"]
+      result.headers.add((k, hv.s))
+  if v.hasKey("timeoutMs"):
+    let t = v.get("timeoutMs", name)
     case t.kind
-    of JInt: result.timeoutMs = int(t.getInt())
-    of JFloat: result.timeoutMs = int(t.getFloat())
+    of nvkInt: result.timeoutMs = int(t.i)
+    of nvkFloat: result.timeoutMs = int(t.f)
     else:
       raise newException(CatchableError,
         name & ": options.timeoutMs must be a number")
@@ -368,16 +368,13 @@ init proc(module: Module) =
       var url: string
       if not strArg(ctx, args, 0, "fetch", exception, url):
         return nil
-      var optsNode: JsonNode = nil
+      var optsVal = NimValue(kind: nvkUndefined)
       if int(argumentCount) == 2:
-        var err = ""
-        optsNode = jsToJson(ctx, args[1], err)
-        if optsNode == nil:
-          throwError(ctx, "fetch: options: " & err, exception)
+        if not nimArg(ctx, args, 1, "fetch", exception, optsVal):
           return nil
       var opts: FetchOpts
       try:
-        opts = parseOpts(optsNode, "fetch", true, true)
+        opts = parseOpts(optsVal, "fetch", true, true)
       except CatchableError as e:
         throwError(ctx, e.msg, exception)
         return nil
@@ -390,16 +387,13 @@ init proc(module: Module) =
       var url: string
       if not strArg(ctx, args, 0, "get", exception, url):
         return nil
-      var optsNode: JsonNode = nil
+      var optsVal = NimValue(kind: nvkUndefined)
       if int(argumentCount) == 2:
-        var err = ""
-        optsNode = jsToJson(ctx, args[1], err)
-        if optsNode == nil:
-          throwError(ctx, "get: options: " & err, exception)
+        if not nimArg(ctx, args, 1, "get", exception, optsVal):
           return nil
       var opts: FetchOpts
       try:
-        opts = parseOpts(optsNode, "get", false, false)
+        opts = parseOpts(optsVal, "get", false, false)
       except CatchableError as e:
         throwError(ctx, e.msg, exception)
         return nil
@@ -414,16 +408,13 @@ init proc(module: Module) =
         return nil
       if not strArg(ctx, args, 1, "post", exception, body):
         return nil
-      var optsNode: JsonNode = nil
+      var optsVal = NimValue(kind: nvkUndefined)
       if int(argumentCount) == 3:
-        var err = ""
-        optsNode = jsToJson(ctx, args[2], err)
-        if optsNode == nil:
-          throwError(ctx, "post: options: " & err, exception)
+        if not nimArg(ctx, args, 2, "post", exception, optsVal):
           return nil
       var opts: FetchOpts
       try:
-        opts = parseOpts(optsNode, "post", false, false)
+        opts = parseOpts(optsVal, "post", false, false)
       except CatchableError as e:
         throwError(ctx, e.msg, exception)
         return nil
@@ -443,16 +434,21 @@ init proc(module: Module) =
         return nil
       let port = int(portF)
       var host = "127.0.0.1"
-      var handlerV: JSValueRef
+      var handlerIdx = 1
       if int(argumentCount) == 2:
-        handlerV = args[1]
+        handlerIdx = 1
       else:
         if not strArg(ctx, args, 1, "serve", exception, host):
           return nil
-        handlerV = args[2]
-      if not JSObjectIsFunction(ctx, handlerV):
-        throwError(ctx, "serve: handler is not a function", exception)
+        handlerIdx = 2
+      var handlerVal: NimValue
+      if not nimArg(ctx, args, handlerIdx, "serve", exception, handlerVal):
         return nil
+      if handlerVal.kind != nvkFunction:
+        throwError(ctx, "serve: handler is not a function, got " &
+          jsTypeName(handlerVal.kind), exception)
+        return nil
+      let handlerV = handlerVal.raw
       let rt = currentRt()
       var server = newHttpServer(rt.ensureLoop(), populate = false)
       server.handler = httpOnRequest

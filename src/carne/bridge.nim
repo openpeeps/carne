@@ -140,31 +140,6 @@ proc checkArity*(argumentCount: csize_t; wantMin, wantMax: int;
     return false
   true
 
-proc strArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
-    i: int; name: string; exception: ptr JSValueRef;
-    val: var string): bool =
-  ## Reads arg i as a string. False + JS throw on failure.
-  var ex: JSValueRef = nil
-  let s = JSValueToStringCopy(ctx, args[i], addr ex)
-  if s == nil:
-    throwError(ctx, name & ": argument " & $i & " is not convertible to string",
-      exception)
-    return false
-  val = $s
-  JSStringRelease(s)
-  true
-
-proc numArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
-    i: int; name: string; exception: ptr JSValueRef;
-    val: var float): bool =
-  ## Reads arg i via Number(arg). False + JS throw on failure.
-  var ex: JSValueRef = nil
-  val = JSValueToNumber(ctx, args[i], addr ex)
-  if ex != nil:
-    throwError(ctx, name & ": argument " & $i & " is not a number", exception)
-    return false
-  true
-
 proc jsonToJS*(ctx: JSContextRef; node: JsonNode): JSValueRef =
   ## Parses $node as JSON into a fresh JS value. nil on failure
   ## (only when $node is not valid JSON, e.g. NaN payloads).
@@ -618,6 +593,50 @@ proc fromJsonNode*(n: JsonNode): NimValue =
       obj: initOrderedTable[string, NimValue]())
     for k, item in n.pairs:
       result.obj[k] = fromJsonNode(item)
+
+proc strArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
+    i: int; name: string; exception: ptr JSValueRef;
+    val: var string): bool =
+  ## Reads arg i as a string (strict: non-strings throw a type error).
+  ## False + JS throw on failure.
+  var v: NimValue
+  if not nimArg(ctx, args, i, name, exception, v):
+    return false
+  try:
+    val = v.asString(name)
+    true
+  except CatchableError as e:
+    throwError(ctx, e.msg, exception)
+    false
+
+proc numArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
+    i: int; name: string; exception: ptr JSValueRef;
+    val: var float): bool =
+  ## Reads arg i as a number (strict: ints widen, non-numbers throw).
+  ## False + JS throw on failure.
+  var v: NimValue
+  if not nimArg(ctx, args, i, name, exception, v):
+    return false
+  try:
+    val = v.asFloat(name)
+    true
+  except CatchableError as e:
+    throwError(ctx, e.msg, exception)
+    false
+
+proc boolArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
+    i: int; name: string; exception: ptr JSValueRef;
+    val: var bool): bool =
+  ## Reads arg i as a boolean (strict). False + JS throw on failure.
+  var v: NimValue
+  if not nimArg(ctx, args, i, name, exception, v):
+    return false
+  try:
+    val = v.asBool(name)
+    true
+  except CatchableError as e:
+    throwError(ctx, e.msg, exception)
+    false
 
 template exportObject*(body: untyped): untyped =
   ## Marker for member declarations inside `init`. Only `init`

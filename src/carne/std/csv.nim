@@ -29,24 +29,22 @@ init proc(module: Module) =
       var headers = false
       var opts = defaultCsvOptions()
       if int(argumentCount) >= 2:
-        var err = ""
-        let o = jsToJson(ctx, args[1], err)
-        if o == nil:
-          throwError(ctx, "parse: options: " & err, exception)
+        var v: NimValue
+        if not nimArg(ctx, args, 1, "parse", exception, v):
           return nil
-        if o.kind != JObject:
+        if v.kind != nvkObject:
           throwError(ctx, "parse: options must be an object", exception)
           return nil
-        if o.hasKey("headers") and o["headers"].kind == JBool:
-          headers = o["headers"].getBool()
-        if o.hasKey("delimiter") and o["delimiter"].kind == JString:
-          let d = o["delimiter"].getStr()
-          if d.len > 0:
-            opts.delimiter = d[0]
-        if o.hasKey("quote") and o["quote"].kind == JString:
-          let q = o["quote"].getStr()
-          if q.len > 0:
-            opts.quote = q[0]
+        if v.hasKey("headers") and v.get("headers", "parse").kind == nvkBool:
+          headers = v.get("headers", "parse").b
+        if v.hasKey("delimiter"):
+          let d = v.get("delimiter", "parse")
+          if d.kind == nvkString and d.s.len > 0:
+            opts.delimiter = d.s[0]
+        if v.hasKey("quote"):
+          let q = v.get("quote", "parse")
+          if q.kind == nvkString and q.s.len > 0:
+            opts.quote = q.s[0]
       let tmp = getTempDir() / "carne_csv_parse.tmp"
       try:
         writeFile(tmp, text)
