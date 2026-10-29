@@ -24,15 +24,16 @@ proc colorToJson(c: Color): JsonNode =
   %*{"r": int(round(c.r * 255.0)), "g": int(round(c.g * 255.0)),
     "b": int(round(c.b * 255.0)), "a": c.a}
 
-proc numField(node: JsonNode; field: string): float =
+proc numField(v: NimValue; field, name: string): float =
   ## Reads a numeric field as float. Raises on anything else.
-  if not node.hasKey(field):
+  if not v.hasKey(field):
     raise newException(CatchableError, "color needs numeric \"" & field & "\"")
-  case node[field].kind
-  of JInt:
-    float(node[field].getInt())
-  of JFloat:
-    node[field].getFloat()
+  let f = v.get(field, name)
+  case f.kind
+  of nvkInt:
+    float(f.i)
+  of nvkFloat:
+    f.f
   else:
     raise newException(CatchableError, "color needs numeric \"" & field & "\"")
 
@@ -40,22 +41,20 @@ proc colorArg(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     i: int; name: string; exception: ptr JSValueRef;
     color: var Color): bool =
   ## Reads arg i as a {r, g, b, a?} object. False + JS throw on failure.
-  var err = ""
-  let node = jsToJson(ctx, args[i], err)
-  if node == nil:
-    throwError(ctx, name & ": color " & err, exception)
+  var v: NimValue
+  if not nimArg(ctx, args, i, name, exception, v):
     return false
-  if node.kind != JObject:
+  if v.kind != nvkObject:
     throwError(ctx, name & ": color must be an {r, g, b, a?} object",
       exception)
     return false
   try:
     var c = Color(a: 1.0)
-    c.r = numField(node, "r") / 255.0
-    c.g = numField(node, "g") / 255.0
-    c.b = numField(node, "b") / 255.0
-    if node.hasKey("a"):
-      c.a = numField(node, "a")
+    c.r = numField(v, "r", name) / 255.0
+    c.g = numField(v, "g", name) / 255.0
+    c.b = numField(v, "b", name) / 255.0
+    if v.hasKey("a"):
+      c.a = numField(v, "a", name)
     if c.r < 0.0 or c.r > 1.0 or c.g < 0.0 or c.g > 1.0 or
         c.b < 0.0 or c.b > 1.0 or c.a < 0.0 or c.a > 1.0:
       throwError(ctx, name & ": r/g/b must be 0..255 and a 0..1", exception)
@@ -69,9 +68,15 @@ proc colorArg(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
 proc amountArg(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     i: int; name: string; exception: ptr JSValueRef;
     amount: var float): bool =
-  if not numArg(ctx, args, i, name, exception, amount):
+  var v: NimValue
+  if not nimArg(ctx, args, i, name, exception, v):
     return false
-  true
+  try:
+    amount = v.asFloat(name)
+    true
+  except CatchableError as e:
+    throwError(ctx, name & ": " & e.msg, exception)
+    false
 
 ## Builds the std/colors namespace object.
 init proc(module: Module) =
@@ -81,8 +86,14 @@ init proc(module: Module) =
       ## colors.parse(text) -> {r, g, b, a}
       if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
         return nil
+      var v: NimValue
+      if not nimArg(ctx, args, 0, "parse", exception, v):
+        return nil
       var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
+      try:
+        text = v.asString("parse")
+      except CatchableError as e:
+        throwError(ctx, e.msg, exception)
         return nil
       try:
         returnJson(ctx, colorToJson(parseColor(text)), "parse", exception)

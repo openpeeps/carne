@@ -51,8 +51,14 @@ proc doParse(ctx: JSContextRef; argumentCount: csize_t;
   if not checkArity(argumentCount, 1, 1, name, ctx, exception, usage):
     return nil
   let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
+  var v: NimValue
+  if not nimArg(ctx, args, 0, name, exception, v):
+    return nil
   var text: string
-  if not strArg(ctx, args, 0, name, exception, text):
+  try:
+    text = v.asString(name)
+  except CatchableError as e:
+    throwError(ctx, e.msg & "\n" & usage, exception)
     return nil
   try:
     returnJson(ctx, sqlToJson(parseSql(text, driver)), name, exception)
@@ -68,8 +74,14 @@ proc doValidate(ctx: JSContextRef; argumentCount: csize_t;
   if not checkArity(argumentCount, 1, 1, name, ctx, exception, usage):
     return nil
   let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
+  var v: NimValue
+  if not nimArg(ctx, args, 0, name, exception, v):
+    return nil
   var text: string
-  if not strArg(ctx, args, 0, name, exception, text):
+  try:
+    text = v.asString(name)
+  except CatchableError as e:
+    throwError(ctx, e.msg & "\n" & usage, exception)
     return nil
   try:
     discard parseSql(text, driver)

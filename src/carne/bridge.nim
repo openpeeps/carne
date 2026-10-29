@@ -5,6 +5,7 @@
 # become JS Error throws via throwError.
 
 import std/macros
+import std/math
 import std/tables
 
 import pkg/openparser/json
@@ -236,6 +237,387 @@ proc propToJS*(ctx: JSContextRef; v: JsonNode): JSValueRef =
     jsonToJS(ctx, newJNull())
   else:
     r
+
+type
+  NimValueKind* = enum
+    ## JS-facing value kinds. Numbers split: integral doubles become
+    ## nvkInt (within ±2^53), the rest nvkFloat (incl. NaN/Infinity,
+    ## which JSON cannot represent but JSC can).
+    nvkUndefined, nvkNull, nvkBool, nvkInt, nvkFloat, nvkString,
+    nvkArray, nvkObject, nvkFunction, nvkSymbol, nvkBigInt
+
+  NimValue* = object
+    ## An eager snapshot of a JS value. Primitives, arrays and plain
+    ## objects are deep-copied into Nim data; functions, symbols and
+    ## bigints keep the borrowed `raw` ref, valid only for the duration
+    ## of the callback that produced it (callers that retain must
+    ## JSValueProtect separately, as std/http does for handlers).
+    case kind*: NimValueKind
+    of nvkUndefined, nvkNull: discard
+    of nvkBool: b*: bool
+    of nvkInt: i*: int64
+    of nvkFloat: f*: float
+    of nvkString: s*: string
+    of nvkArray: arr*: seq[NimValue]
+    of nvkObject: obj*: OrderedTable[string, NimValue]
+    of nvkFunction, nvkSymbol, nvkBigInt: raw*: JSValueRef
+
+const maxNimValueDepth = 64
+
+proc jsTypeName*(kind: NimValueKind): string =
+  ## JS-style type name for error messages.
+  case kind
+  of nvkUndefined: "undefined"
+  of nvkNull: "null"
+  of nvkBool: "boolean"
+  of nvkInt, nvkFloat: "number"
+  of nvkString: "string"
+  of nvkArray, nvkObject: "object"
+  of nvkFunction: "function"
+  of nvkSymbol: "symbol"
+  of nvkBigInt: "bigint"
+
+proc fromJSImpl(ctx: JSContextRef; v: JSValueRef; depth: int;
+    err: var string): NimValue =
+  if v == nil:
+    err = "is null"
+    return NimValue(kind: nvkUndefined)
+  if depth > maxNimValueDepth:
+    err = "is too deeply nested or circular"
+    return NimValue(kind: nvkUndefined)
+  case JSValueGetType(ctx, v)
+  of kJSTypeUndefined:
+    result = NimValue(kind: nvkUndefined)
+  of kJSTypeNull:
+    result = NimValue(kind: nvkNull)
+  of kJSTypeBoolean:
+    result = NimValue(kind: nvkBool, b: JSValueToBoolean(ctx, v))
+  of kJSTypeNumber:
+    var ex: JSValueRef = nil
+    let f = JSValueToNumber(ctx, v, addr ex)
+    if ex != nil:
+      err = "is not a number"
+      return NimValue(kind: nvkUndefined)
+    if f == trunc(f) and f >= -9007199254740991.0 and
+        f <= 9007199254740991.0:
+      result = NimValue(kind: nvkInt, i: int64(f))
+    else:
+      result = NimValue(kind: nvkFloat, f: f)
+  of kJSTypeString:
+    var ex: JSValueRef = nil
+    let s = JSValueToStringCopy(ctx, v, addr ex)
+    if s == nil:
+      err = "is not convertible to string"
+      return NimValue(kind: nvkUndefined)
+    defer: JSStringRelease(s)
+    result = NimValue(kind: nvkString, s: $s)
+  of kJSTypeSymbol:
+    result = NimValue(kind: nvkSymbol, raw: v)
+  of kJSTypeBigInt:
+    result = NimValue(kind: nvkBigInt, raw: v)
+  of kJSTypeObject:
+    if JSValueIsArray(ctx, v):
+      var ex: JSValueRef = nil
+      let lenKey = newJSString("length")
+      defer: JSStringRelease(lenKey)
+      let lenV = JSObjectGetProperty(ctx, v, lenKey, addr ex)
+      if ex != nil or lenV == nil:
+        err = "has an unreadable length"
+        return NimValue(kind: nvkUndefined)
+      var ex2: JSValueRef = nil
+      let n = int(JSValueToNumber(ctx, lenV, addr ex2))
+      if ex2 != nil or n < 0:
+        err = "has an unreadable length"
+        return NimValue(kind: nvkUndefined)
+      result = NimValue(kind: nvkArray, arr: @[])
+      for idx in 0 ..< n:
+        var eEx: JSValueRef = nil
+        let item = JSObjectGetPropertyAtIndex(ctx, v, cuint(idx), addr eEx)
+        if eEx != nil or item == nil:
+          err = "has an unreadable index " & $idx
+          return NimValue(kind: nvkUndefined)
+        let nv = fromJSImpl(ctx, item, depth + 1, err)
+        if err != "":
+          return NimValue(kind: nvkUndefined)
+        result.arr.add(nv)
+    elif JSObjectIsFunction(ctx, v):
+      result = NimValue(kind: nvkFunction, raw: v)
+    else:
+      let names = JSObjectCopyPropertyNames(ctx, v)
+      if names == nil:
+        err = "has unreadable properties"
+        return NimValue(kind: nvkUndefined)
+      defer: JSPropertyNameArrayRelease(names)
+      result = NimValue(kind: nvkObject,
+        obj: initOrderedTable[string, NimValue]())
+      let count = int(JSPropertyNameArrayGetCount(names))
+      for idx in 0 ..< count:
+        let jsName = JSPropertyNameArrayGetNameAtIndex(names, csize_t(idx))
+        let key = $jsName
+        var pEx: JSValueRef = nil
+        let prop = JSObjectGetProperty(ctx, v, jsName, addr pEx)
+        if pEx != nil or prop == nil:
+          err = "has an unreadable property \"" & key & "\""
+          return NimValue(kind: nvkUndefined)
+        let nv = fromJSImpl(ctx, prop, depth + 1, err)
+        if err != "":
+          return NimValue(kind: nvkUndefined)
+        result.obj[key] = nv
+
+proc fromJS*(ctx: JSContextRef; v: JSValueRef;
+    err: var string): NimValue =
+  ## Eager snapshot of a JS value. NimValue + "" on success, err message
+  ## set on failure (return value is undefined then).
+  err = ""
+  fromJSImpl(ctx, v, 0, err)
+
+proc toJS*(ctx: JSContextRef; v: NimValue): JSValueRef =
+  ## Builds a fresh JS value from a snapshot. nil on failure (only when
+  ## a nested object property fails to install). Function/symbol/bigint
+  ## return the borrowed ref they were snapshotted from.
+  case v.kind
+  of nvkUndefined:
+    JSValueMakeUndefined(ctx)
+  of nvkNull:
+    JSValueMakeNull(ctx)
+  of nvkBool:
+    JSValueMakeBoolean(ctx, v.b)
+  of nvkInt:
+    JSValueMakeNumber(ctx, cdouble(v.i))
+  of nvkFloat:
+    JSValueMakeNumber(ctx, cdouble(v.f))
+  of nvkString:
+    let jsStr = newJSString(v.s)
+    defer: JSStringRelease(jsStr)
+    JSValueMakeString(ctx, jsStr)
+  of nvkArray:
+    var vals: seq[JSValueRef] = @[]
+    for item in v.arr:
+      let j = toJS(ctx, item)
+      if j == nil:
+        return nil
+      vals.add(j)
+    var ex: JSValueRef = nil
+    let arr =
+      if vals.len > 0:
+        JSObjectMakeArray(ctx, csize_t(vals.len), addr vals[0], addr ex)
+      else:
+        JSObjectMakeArray(ctx, 0, nil, addr ex)
+    if ex != nil:
+      nil
+    else:
+      arr
+  of nvkObject:
+    let obj = newObject(ctx)
+    var ex: JSValueRef = nil
+    for k, item in v.obj.pairs:
+      let j = toJS(ctx, item)
+      if j == nil:
+        return nil
+      setProp(ctx, obj, k, j, addr ex)
+      if ex != nil:
+        return nil
+    obj
+  of nvkFunction, nvkSymbol, nvkBigInt:
+    v.raw
+
+proc nimArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
+    i: int; name: string; exception: ptr JSValueRef;
+    val: var NimValue): bool =
+  ## Reads arg i as a NimValue snapshot. False + JS throw on failure.
+  var err = ""
+  if args[i] == nil:
+    err = "is missing"
+  else:
+    val = fromJS(ctx, args[i], err)
+  if err != "":
+    throwError(ctx, name & ": argument " & $i & " " & err, exception)
+    return false
+  true
+
+proc asString*(v: NimValue; what: string): string =
+  ## Strict string getter. Raises (callers turn it into a JS throw).
+  if v.kind != nvkString:
+    raise newException(CatchableError,
+      what & ": expected string, got " & jsTypeName(v.kind))
+  v.s
+
+proc asBool*(v: NimValue; what: string): bool =
+  if v.kind != nvkBool:
+    raise newException(CatchableError,
+      what & ": expected boolean, got " & jsTypeName(v.kind))
+  v.b
+
+proc asInt*(v: NimValue; what: string): int64 =
+  ## Integral numbers only; floats must be integral and in int64 range.
+  case v.kind
+  of nvkInt:
+    v.i
+  of nvkFloat:
+    if v.f == trunc(v.f) and v.f >= -9007199254740991.0 and
+        v.f <= 9007199254740991.0:
+      int64(v.f)
+    else:
+      raise newException(CatchableError,
+        what & ": expected integer, got non-integral number")
+  else:
+    raise newException(CatchableError,
+      what & ": expected integer, got " & jsTypeName(v.kind))
+
+proc asFloat*(v: NimValue; what: string): float =
+  ## Ints widen; anything else raises.
+  case v.kind
+  of nvkFloat:
+    v.f
+  of nvkInt:
+    float(v.i)
+  else:
+    raise newException(CatchableError,
+      what & ": expected number, got " & jsTypeName(v.kind))
+
+proc asArray*(v: NimValue; what: string): seq[NimValue] =
+  if v.kind != nvkArray:
+    raise newException(CatchableError,
+      what & ": expected array, got " & jsTypeName(v.kind))
+  v.arr
+
+proc asObject*(v: NimValue; what: string): OrderedTable[string, NimValue] =
+  if v.kind != nvkObject:
+    raise newException(CatchableError,
+      what & ": expected object, got " & jsTypeName(v.kind))
+  v.obj
+
+proc hasKey*(v: NimValue; key: string): bool =
+  ## True when v is an object holding key.
+  v.kind == nvkObject and v.obj.hasKey(key)
+
+proc get*(v: NimValue; key: string; what: string): NimValue =
+  ## Object field access. Raises on wrong kind or missing key.
+  if v.kind != nvkObject:
+    raise newException(CatchableError,
+      what & ": expected object, got " & jsTypeName(v.kind))
+  if not v.obj.hasKey(key):
+    raise newException(CatchableError,
+      what & ": missing \"" & key & "\"")
+  v.obj[key]
+
+proc getOpt*(v: NimValue; key: string; default: NimValue): NimValue =
+  ## Missing keys (or non-objects) yield default instead of raising.
+  if v.kind == nvkObject and v.obj.hasKey(key):
+    v.obj[key]
+  else:
+    default
+
+proc strField*(ctx: JSContextRef; v: NimValue; key, name: string;
+    exception: ptr JSValueRef; val: var string): bool =
+  ## Required string field. False + JS throw on failure.
+  if v.kind != nvkObject:
+    throwError(ctx, name & ": expected object, got " & jsTypeName(v.kind),
+      exception)
+    return false
+  if not v.obj.hasKey(key):
+    throwError(ctx, name & ": missing \"" & key & "\"", exception)
+    return false
+  let f = v.obj[key]
+  if f.kind != nvkString:
+    throwError(ctx, name & ": \"" & key & "\" must be a string, got " &
+      jsTypeName(f.kind), exception)
+    return false
+  val = f.s
+  true
+
+proc numField*(ctx: JSContextRef; v: NimValue; key, name: string;
+    exception: ptr JSValueRef; val: var float): bool =
+  ## Required numeric field (ints widen). False + JS throw on failure.
+  if v.kind != nvkObject:
+    throwError(ctx, name & ": expected object, got " & jsTypeName(v.kind),
+      exception)
+    return false
+  if not v.obj.hasKey(key):
+    throwError(ctx, name & ": missing \"" & key & "\"", exception)
+    return false
+  let f = v.obj[key]
+  case f.kind
+  of nvkInt:
+    val = float(f.i)
+  of nvkFloat:
+    val = f.f
+  else:
+    throwError(ctx, name & ": \"" & key & "\" must be a number, got " &
+      jsTypeName(f.kind), exception)
+    return false
+  true
+
+proc boolField*(ctx: JSContextRef; v: NimValue; key, name: string;
+    exception: ptr JSValueRef; val: var bool): bool =
+  ## Required boolean field. False + JS throw on failure.
+  if v.kind != nvkObject:
+    throwError(ctx, name & ": expected object, got " & jsTypeName(v.kind),
+      exception)
+    return false
+  if not v.obj.hasKey(key):
+    throwError(ctx, name & ": missing \"" & key & "\"", exception)
+    return false
+  let f = v.obj[key]
+  if f.kind != nvkBool:
+    throwError(ctx, name & ": \"" & key & "\" must be a boolean, got " &
+      jsTypeName(f.kind), exception)
+    return false
+  val = f.b
+  true
+
+proc toJsonNode*(v: NimValue): JsonNode =
+  ## Converts a snapshot to the format funnel. Raises on kinds JSON
+  ## cannot represent (undefined, functions, symbols, bigints,
+  ## NaN/Infinity) — the same inputs jsToJson rejects today.
+  case v.kind
+  of nvkNull:
+    result = newJNull()
+  of nvkBool:
+    result = %v.b
+  of nvkInt:
+    result = %v.i
+  of nvkFloat:
+    if v.f.classify in {fcNaN, fcInf, fcNegInf}:
+      raise newException(CatchableError,
+        "value is not JSON-serializable (NaN/Infinity)")
+    result = %v.f
+  of nvkString:
+    result = %v.s
+  of nvkArray:
+    result = newJArray()
+    for item in v.arr:
+      result.add(toJsonNode(item))
+  of nvkObject:
+    result = newJObject()
+    for k, item in v.obj.pairs:
+      result[k] = toJsonNode(item)
+  of nvkUndefined, nvkFunction, nvkSymbol, nvkBigInt:
+    raise newException(CatchableError,
+      "value is not JSON-serializable (" & jsTypeName(v.kind) & ")")
+
+proc fromJsonNode*(n: JsonNode): NimValue =
+  ## Converts the format funnel back to a snapshot.
+  case n.kind
+  of JNull:
+    result = NimValue(kind: nvkNull)
+  of JBool:
+    result = NimValue(kind: nvkBool, b: n.getBool())
+  of JInt:
+    result = NimValue(kind: nvkInt, i: int64(n.getInt()))
+  of JFloat:
+    result = NimValue(kind: nvkFloat, f: n.getFloat())
+  of JString:
+    result = NimValue(kind: nvkString, s: n.getStr())
+  of JArray:
+    result = NimValue(kind: nvkArray, arr: @[])
+    for item in n:
+      result.arr.add(fromJsonNode(item))
+  of JObject:
+    result = NimValue(kind: nvkObject,
+      obj: initOrderedTable[string, NimValue]())
+    for k, item in n.pairs:
+      result.obj[k] = fromJsonNode(item)
 
 template exportObject*(body: untyped): untyped =
   ## Marker for member declarations inside `init`. Only `init`
