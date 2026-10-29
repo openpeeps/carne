@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <code>clue install carne --build</code>
+  <code>nimble install carne</code> / <code>clue install carne --build</code>
 </p>
 
 <p align="center">
@@ -22,23 +22,24 @@
 > and every example below is covered by it.
 
 ## About
-A JavaScript runtime based on JavaScriptCore and Nim. No drama, no overhype. With a rich
+A JavaScript runtime based on JavaScriptCore and Nim! No drama, no overhype. With a rich
 standard library, so you don't need npm anymore! Still, it ships with an efficient package manager that
 abolishes `node_modules` and keeps dependencies in one shared global store instead.
 
 Carne is not a drop-in replacement for Node.js, Bun or Deno, instead it is a runtime with an opinion: most scripts
 should not need a dependency at all. It trades the npm ocean for a standard library that covers
-everyday work (files, formats, feeds, SQL, crypto, QR, HTTP) out of the box, starts in ~8 ms on the back
-of JavaScriptCore, and stays ~6k lines of Nim, small enough to read in an afternoon.
-If you want the Node ecosystem, keep Node. If you want a script that just runs, take Carne.
+everyday work out of the box, starts in ~8 ms on the back of JavaScriptCore, and stays ~6k lines of Nim,
+small enough to read in an afternoon. If you want the Node ecosystem, keep Node. If you want a
+script that just runs, take Carne.
 
 ## 😍 Key Features
 - JavaScript runtime powered by JavaScriptCore
-- Powerful Standard Library `env`, `fs`, `crypto` (hash/aead/sign/argon2id), `http`, `tcp`, `udp`, `ws`, `path`
-- Built-in HTTP/1.1, H/2, UDP, TCP and WebSockets library
-- Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`, `sql`, `colors`, `css`, `diff`, `qr`, `svg`
+- Powerful Standard Library
+- Built-in cryptographic library via [pkg/nimcypher](https://github.com/nimbase/nimcypher)
+- HTTP/1.1, H/2, UDP, TCP and WebSockets library via [pkg/powpow](https://github.com/openpeeps/powpow)
+- Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`, `sql`, `colors`, `css`, `diff`, `qr`, `svg` via [pkg/openparser](https://github.com/openpeeps/openparser)
 - Built-in JIT compiled Regex Engine
-- Internationalization via GNU Gettext PO/MO
+- Built-in i18n via GNU Gettext PO/MO
 - Built-in package manager (`carne pkg`)
   - one shared global store in your home dir, no `node_modules`,
     no duplicated installs across projects
@@ -417,12 +418,10 @@ timers, truly async, no threads.
 - [ ] Public package registry (`carne/pkgs`)
 - [x] Beyond macOS (Linux via JavaScriptCoreGTK 4.1)
 
-## Examples
-...
 
 ## Benchmarks
 
-Shared JS bench suite (`bench/js`, via `hyperfine --warmup 2 --min-runs 3`,
+Kinda useless JS bench suite (`bench/js`, via `hyperfine --warmup 2 --min-runs 3`,
 macOS, `bench/run.sh` reproduces; node v22.22.1, bun 1.4.3):
 
 | Benchmark | carne | node | bun |
@@ -445,6 +444,7 @@ A cold `hello.js` run costs carne ~8.5 ms, so everything near that floor is
 startup-dominated (JSC context + stdlib install), not compute. Node crashes
 `tail_recursive` (no proper tail calls: stack overflow at 10k frames);
 carne inherits JSC's tail-call support, like bun.
+
 
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/carne/issues)
