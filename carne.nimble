@@ -12,7 +12,7 @@ binDir        = "bin"
 # Dependencies
 
 requires "nim >= 2.2.10"
-requires "datpkgr >= 0.1.11"
+requires "datpkgr >= 0.1.12"
 requires "javascriptcore >= 0.1.0"
 
 requires "nimcypher >= 0.2.5"
