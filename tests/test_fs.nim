@@ -2,6 +2,10 @@ import std/os
 import unittest
 
 import carne
+import carne/modules
+import carne/std/fs
+
+registerStd("std/fs", fs.install)
 
 proc tmpPath(name: string): string =
   getTempDir() / ("carne_test_" & name)

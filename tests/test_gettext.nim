@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/gettext
+
+registerStd("std/gettext", gettext.install)
 
 const jsPo = """'msgid ""\nmsgstr ""\n"Project-Id-Version: demo\\n"\n""" &
   """"Language: fr\\n"\n\n#, fuzzy\nmsgid "Hello"\nmsgstr "Bonjour"\n\n""" &

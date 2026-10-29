@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/qr
+
+registerStd("std/qr", qr.install)
 
 test "qr encode size and svg":
   check runCode(

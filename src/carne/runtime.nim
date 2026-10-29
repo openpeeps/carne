@@ -17,7 +17,6 @@ import powpow/loop
 import ./bridge
 import ./modules
 import ./std/timers
-import ./std/http
 
 export bridge
 
@@ -193,7 +192,8 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
       return (completion, rt.exitCode)
     finally:
       setCurrentRt(nil)
-      closeAllServers()
+      if onTeardown != nil:
+        onTeardown()
       if rt.loop != nil:
         rt.loop.close()
       mark(prof, pt, "teardown")

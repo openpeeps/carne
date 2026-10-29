@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/bson
+
+registerStd("std/bson", bson.install)
 
 test "bson stringify/parse roundtrip":
   check runCode(

@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/crypto
+
+registerStd("std/crypto", crypto.install)
 
 test "crypto hash known answers":
   check runCode(

@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/svg
+
+registerStd("std/svg", svg.install)
 
 test "svg parse element tree":
   check runCode(

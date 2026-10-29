@@ -2,6 +2,12 @@ import std/os
 import unittest
 
 import carne
+import carne/modules
+import carne/std/dotenv
+import carne/std/env
+
+registerStd("std/dotenv", dotenv.install)
+registerStd("std/env", env.install)
 
 test "dotenv parse with expansion":
   let res = runCode(

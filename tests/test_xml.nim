@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/xml
+
+registerStd("std/xml", xml.install)
 
 test "xml parse element shape":
   let res = runCode(

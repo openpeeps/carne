@@ -13,13 +13,38 @@
 </p>
 
 > [!NOTE]
-> Carne is still experimental...
+> Carne is still experimental: it runs on macOS only, the `std/*` API
+> may change between 0.x releases, and a few modules are parse-only
+> in v1 (see the Standard Library notes below). Scripts needing
+> top-level `await` must wrap in an async IIFE for now. Not recommended
+> for production yet, but the full test suite passes and every example
+> below is covered by it.
+
+## About
+A JavaScript runtime based on JavaScriptCore and Nim. No drama, no overhype. With a rich
+standard library, so you don't need npm anymore! Still, it ships with an efficient package manager that
+abolishes `node_modules` and keeps dependencies in one shared global store instead. Carne is not a
+drop-in replacement for Node.js, Bun or Deno, instead it is a runtime with an opinion: most scripts
+should not need a dependency at all. It trades the npm ocean for a standard library that covers
+everyday work (files, formats, feeds, SQL, crypto, QR, HTTP) out of the box, starts in ~8 ms on the back
+of JavaScriptCore, and stays ~6k lines of Nim, small enough to read in an afternoon.
+If you want the Node ecosystem, keep Node. If you want a script that just runs, take Carne.
 
 ## 😍 Key Features
 - JavaScript runtime powered by JavaScriptCore
-- Powerful Standard Library: `env`, `fs`, `crypto` (hash/aead/sign/argon2id), `http`, `path`
-- Reading/Writing various formats: `yaml`, `toml`, `csv`, `xml`, `vcard`, `feed`, `sql`, `colors` `css` `diff` `gettext` `regex` `qr` `svg`
-- Built-in package manager
+- Powerful Standard Library `env`, `fs`, `crypto` (hash/aead/sign/argon2id), `http`, `tcp`, `udp`, `ws`, `path`
+- Built-in HTTP/1.1, H/2, UDP, TCP and WebSockets library
+- Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`, `sql`, `colors`, `css`, `diff`, `qr`, `svg`
+- Built-in JIT compiled Regex Engine
+- Internationalization via GNU Gettext PO/MO
+- Built-in package manager (`carne pkg`)
+  - one shared global store in your home dir, no `node_modules`,
+    no duplicated installs across projects
+  - `install` (by name or `--url`), `remove`, `update`, `list`,
+    `prune` orphans, `refresh` registry data
+  - `develop <path>` for editable installs from a local directory
+  - `package.json` manifests, npm-spec compliant; public registry
+    coming (see Roadmap)
 - Written in Nim language
 - Open Source | `MIT` License
 
@@ -47,6 +72,312 @@ Packages
   -h, --help              show this help
   --version               show version
 ```
+
+## Standard Library
+
+All modules load lazily via the global `require("std/<name>")`,
+requiring one costs nothing until first use. Timers are globals
+(No require needed), Node-style.
+
+### `std/env`, process info and environment
+
+```
+const env = require("std/env");
+console.log(env.args());            // e.g. ["carne", "app.js", "--port", "3000"]
+console.log(env.getenv("HOME"));    // string | undefined
+console.log(env.cwd());             // current directory
+env.exit(2);                        // terminate with exit code 2
+```
+
+### `std/fs`, synchronous file system access
+
+```
+const fs = require("std/fs");
+fs.writeFile("/tmp/hello.txt", "hi");
+console.log(fs.readFile("/tmp/hello.txt")); // "hi" (throws on IOError)
+console.log(fs.exists("/tmp/hello.txt"));   // true (files and dirs)
+console.log(fs.readDir("/tmp"));             // ["hello.txt", ...]
+fs.mkdir("/tmp/sub");                        // undefined
+fs.remove("/tmp/hello.txt");                 // files only
+```
+
+### Timers, globals, no require
+
+```
+setTimeout(() => console.log("later"), 100);          // -> numeric id
+const id = setInterval(() => console.log("tick"), 1000);
+clearInterval(id); // or clearTimeout(id)
+```
+
+Extra args are forwarded to the callback (`setTimeout((a) => console.log(a), 10, "x")`).
+Timer throws are recorded as uncaught (exit 1 after drain) without killing
+the remaining timers.
+
+### `std/yaml`, YAML parsing and serialization
+
+```
+const yaml = require("std/yaml");
+const doc = yaml.parse("name: ada\ntags:\n  - nim\n  - js\n");
+console.log(doc.name);            // "ada"
+console.log(yaml.stringify(doc)); // single YAML document
+```
+
+Single-document in v1: trailing documents after `---` are ignored.
+
+### `std/toml`, TOML parsing and serialization
+
+```
+const toml = require("std/toml");
+const cfg = toml.parse('[server]\nhost = "localhost"\nport = 3000\n');
+console.log(cfg.server.port); // 3000
+console.log(toml.stringify(cfg));
+```
+
+TOML datetimes surface as strings (the literal as written).
+
+### `std/ical`, iCalendar parsing and serialization
+
+```
+const ical = require("std/ical");
+const cal = ical.parse("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:1\r\nDTSTART:20260101T100000Z\r\nSUMMARY:Hi\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+console.log(cal.events.length);
+console.log(ical.stringify(cal)); // a VCALENDAR document
+```
+
+Shape: `{events, todos, journals, timezones, others}`. Absent options
+stay absent; dates serialize as `{value, tzid?}`, durations as `"P1DT2H"`
+strings. Unknown properties ride along in `extraProps` and survive
+the roundtrip.
+
+### `std/dotenv`, `.env` file parsing
+
+```
+const dotenv = require("std/dotenv");
+console.log(dotenv.parse("PORT=3000\nHOST=localhost:$PORT\n"));
+// {PORT: "3000", HOST: "localhost:3000"} (variable expansion applied)
+dotenv.load();            // reads ./.env into process env (see std/env)
+dotenv.load(".env", true); // ...overwriting existing vars
+```
+
+### `std/plist`, Apple property lists
+
+```
+const plist = require("std/plist");
+const v = plist.parse('<plist version="1.0"><dict><key>Name</key><string>Ada</string></dict></plist>');
+console.log(v.Name);          // "Ada" (XML or binary plist in)
+console.log(plist.stringify(v)); // XML plist out
+```
+
+### `std/bson`, BSON parsing and serialization
+
+```
+const bson = require("std/bson");
+const blob = bson.stringify({name: "ada", n: 1});
+console.log(JSON.stringify(bson.parse(blob))); // {"name":"ada","n":1}
+```
+
+Raw BSON bytes travel with an opaque mapping (do not read the string
+as text); `stringify` output always parses back.
+
+### `std/csv`, CSV parsing
+
+```
+const csv = require("std/csv");
+console.log(csv.parse("a,b\n1,2\n"));                  // [["a","b"],["1","2"]]
+console.log(csv.parse("a,b\n1,2\n", {headers: true})); // [{a: "1", b: "2"}]
+csv.parse("a;b\n1;2\n", {delimiter: ";"});              // custom delimiter/quote
+```
+
+With `headers: true` the first row becomes keys and the result is an
+array of objects.
+
+### `std/xml`, XML parsing and serialization
+
+```
+const xml = require("std/xml");
+const node = xml.parse("<note><to>Ada</to></note>");
+console.log(node.tag);                          // "note"
+console.log(node.children[0].children[0]);      // "Ada" (text nodes are strings)
+console.log(xml.stringify(node));
+```
+
+Elements map to `{tag, attrs, children}`. Comments, prologs and doctypes
+are dropped on parse.
+
+### `std/vcard`, vCard contact parsing
+
+```
+const vcard = require("std/vcard");
+const contacts = vcard.parse("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada\r\nEND:VCARD\r\n");
+console.log(contacts.length); // 1 (one object per VCARD)
+```
+
+Parse-only in v1: there is no object-to-vCard builder yet.
+
+### `std/feed`, RSS and Atom feed parsing
+
+```
+const feed = require("std/feed");
+const rss = feed.parseRss('<rss version="2.0"><channel><title>T</title><item><title>Hi</title></item></channel></rss>');
+console.log(rss.items.length); // 1 (feed object with items[])
+const atom = feed.parseAtom(text); // feed object with entries[]
+```
+
+Parse-only in v1.
+
+### `std/sql`, SQL parsing and validation
+
+```
+const sql = require("std/sql");
+const ast = sql.sqlite.parse("SELECT a FROM t"); // AST object ({kind, value?, quote?, children?})
+console.log(sql.postgres.validate("SELECT $1"));      // {valid: true}
+console.log(sql.mysql.validate("SELECT `a` FROM t")); // {valid: true}
+```
+
+One sub-namespace per dialect: `sqlite`, `postgres` (= `pgsql`), `mysql`.
+Each has `parse(sql)` (throws a JS `Error` on syntax errors) and
+`validate(sql)` (never throws, reports `{valid: false, error}` instead).
+
+### `std/crypto`, hashing, AEAD sealing, signatures, passwords
+
+```
+const crypto = require("std/crypto");
+console.log(crypto.hash.sha256hex("abc")); // "ba7816bf8f01cfea..."
+const stored = crypto.password.hash("s3cret");      // argon2id "salt:hash"
+console.log(crypto.password.verify("s3cret", stored)); // true
+const keys = crypto.sign.keypair(); // {publicKey, secretKey} hex (ed25519)
+const sig = crypto.sign.sign(keys.secretKey, "msg");
+console.log(crypto.sign.verify(keys.publicKey, "msg", sig)); // true
+const keyHex = "00".repeat(32); // 32-byte key as hex
+const env = crypto.aead.seal("secret", keyHex); // {nonce, mac, cipher} hex
+console.log(crypto.aead.open(env, keyHex));     // "secret" (throws on MAC failure)
+```
+
+All binary values cross the boundary as lowercase hex strings. `open`
+throws on MAC failure; `verify` returns `false` on mismatch instead.
+X25519/RSA/ECDSA and AES modes are deferred.
+
+### `std/path`, file-path and URL parsing
+
+```
+const path = require("std/path");
+console.log(path.parse("/a/b/c.txt").ext); // "txt"
+console.log(path.parse("/a/b/c.txt").segments); // ["a", "b", "c.txt"]
+const web = path.parse("https://user@host:8080/p?q=1#frag");
+console.log(web.host + web.path); // "host/p"
+```
+
+Parse-only in v1. Absent options stay absent.
+
+### `std/colors`, color parsing, formatting and math
+
+```
+const colors = require("std/colors");
+console.log(colors.toHex(colors.parse("red"))); // "#ff0000"
+console.log(colors.toRgb(colors.parse("red"))); // "rgb(255, 0, 0)"
+console.log(colors.lighten(colors.parse("#333"), 20)); // {r, g, b, a}
+console.log(colors.contrastRatio(colors.parse("black"), colors.parse("white"))); // 21
+```
+
+Colors cross the boundary as `{r, g, b, a}` objects. Accepts hex,
+`rgb()`/`hsl()`/`hsv()`/`cmyk()` and named colors; also `darken`,
+`saturate`, `spin`, `complement`, `greyscale`, `mix`, `triad`,
+`isReadable`, `isLight`.
+
+### `std/css`, CSS parsing and declaration validation
+
+```
+const css = require("std/css");
+console.log(css.parse("a { color: red; }").rules.length); // 1
+console.log(css.validate("a { color: red; bogus: 1; }"));
+// [{property: "bogus", valid: false, errors: [...]}] ([] when clean)
+```
+
+### `std/diff`, unified diffs (Myers/patience/histogram)
+
+```
+const diff = require("std/diff");
+console.log(diff.diff("a\nb\n", "a\nc\n").identical); // false
+console.log(diff.unified("a\nb\n", "a\nc\n", {context: 1}));
+// "diff --git ...\n--- /dev/null\n+++ /dev/null\n@@ ...\n a\n-b\n+c\n"
+```
+
+`diff()` returns `{identical, stats, hunks}`; hunk lines are
+`{kind: "equal"|"insert"|"delete", text, spans?}`. Both functions take
+an optional `{context}` options object (default 3).
+
+### `std/gettext`, `.po` parsing and translation
+
+```
+const gettext = require("std/gettext");
+const po = 'msgid "hi"\nmsgstr "salut"\n';
+console.log(gettext.translate(po, "hi")); // "salut"
+console.log(gettext.ntranslate(po, "file", "files", 2));
+console.log(gettext.parse(po).entries.length);
+```
+
+Untranslated ids fall back to the msgid. `.mo` is out of scope in v1.
+
+### `std/regex`, server-side regular expressions
+
+```
+const regex = require("std/regex");
+console.log(regex.test("\\d+", "abc123")); // true (search semantics)
+console.log(regex.exec("(\\w+)@(\\w+)", "mail ada@x.io").match); // "ada@x"
+console.log(regex.matchAll("a+", "aa b aaa").length); // 2
+```
+
+Same engine/semantics as Nim code using openparser. `exec` returns
+`null` on no match.
+
+### `std/qr`, QR code generation (Model 2)
+
+```
+const qr = require("std/qr");
+const code = qr.encode("hello"); // {size, svg, terminal}
+console.log(code.size);          // 21
+console.log(code.svg.slice(0, 5)); // "<svg "
+qr.encode("hello", {ecLevel: "H"}); // higher error correction (L/M/Q/H)
+```
+
+Decoding is out of scope in v1.
+
+### `std/svg`, SVG parsing
+
+```
+const svg = require("std/svg");
+const node = svg.parse('<svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>');
+console.log(node.tag);              // "svg"
+console.log(node.children.length);  // 1
+```
+
+Elements map to `{tag, attrs, children}` (same shape as `std/xml`);
+text, comments and CDATA become `{kind, text}` leaves. Serialization
+is out of scope in v1, pair with `std/xml` when you need to write SVG.
+
+### `std/http`, async HTTP client + server
+
+```
+const http = require("std/http");
+
+// Client (Promises; wrap in an async IIFE, no top-level await yet)
+(async () => {
+  const res = await http.get("https://example.com/");
+  console.log(res.status, res.body.length); // 200 ...
+  const posted = await http.post("https://example.com/api", "hi");
+  const custom = await http.fetch("https://example.com/", {method: "PUT", body: "x"});
+})();
+
+// Server (stays alive until closed, like Node)
+const srv = http.serve(3000, req => ({body: "hi " + req.path}));
+http.close(srv.port);
+```
+
+`fetch(url[, {method, headers, body, timeoutMs}])` returns
+`{status, statusText, headers, body}`. Handlers return a string, a
+`{status?, headers?, body?}` object, or `undefined`; handler throws
+become 500s. Client and server multiplex on one event loop with the
+timers, truly async, no threads.
 
 ## Roadmap
 - [x] JSC runtime: console/process/require/timers CLI

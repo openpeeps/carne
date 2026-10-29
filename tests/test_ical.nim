@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/ical
+
+registerStd("std/ical", ical.install)
 
 const sampleIcs =
   "\"BEGIN:VCALENDAR\\r\\nVERSION:2.0\\r\\nPRODID:-//x//x//EN\\r\\n" &

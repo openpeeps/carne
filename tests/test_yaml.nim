@@ -2,6 +2,10 @@ import std/json
 import unittest
 
 import carne
+import carne/modules
+import carne/std/yaml
+
+registerStd("std/yaml", yaml.install)
 
 test "yaml parse mapping":
   let res = runCode(

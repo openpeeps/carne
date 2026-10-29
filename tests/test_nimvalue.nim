@@ -7,6 +7,20 @@ import javascriptcore
 import pkg/openparser/json
 
 import carne
+import carne/modules
+import carne/std/colors
+import carne/std/diff
+import carne/std/env
+import carne/std/http
+import carne/std/qr
+import carne/std/sql
+
+registerStd("std/colors", colors.install)
+registerStd("std/diff", diff.install)
+registerStd("std/env", env.install)
+registerStd("std/http", http.install)
+registerStd("std/qr", qr.install)
+registerStd("std/sql", sql.install)
 
 test "jsTypeName maps kinds to JS names":
   check jsTypeName(nvkUndefined) == "undefined"

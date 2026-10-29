@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/css
+
+registerStd("std/css", css.install)
 
 test "css parse ruleset":
   check runCode(

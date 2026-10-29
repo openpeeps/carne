@@ -8,8 +8,6 @@
 
 import std/os
 
-import std/os
-
 import javascriptcore
 
 # Narrow import: a full `import powpow/loop` re-exports `init`, which

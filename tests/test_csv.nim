@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/csv
+
+registerStd("std/csv", csv.install)
 
 test "csv parse rows":
   check runCode(

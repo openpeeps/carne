@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/http
+
+registerStd("std/http", http.install)
 
 const preamble = "(async () => { const http = require('std/http'); "
 

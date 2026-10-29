@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/path
+
+registerStd("std/path", path.install)
 
 test "path parse local file":
   check runCode(

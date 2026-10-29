@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/sql
+
+registerStd("std/sql", sql.install)
 
 test "sql parse returns AST with kind/value navigation":
   check runCode(

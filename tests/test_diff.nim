@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/diff
+
+registerStd("std/diff", diff.install)
 
 test "diff identical inputs":
   check runCode(

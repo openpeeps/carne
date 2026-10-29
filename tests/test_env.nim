@@ -2,6 +2,10 @@ import std/os
 import unittest
 
 import carne
+import carne/modules
+import carne/std/env
+
+registerStd("std/env", env.install)
 
 test "env.args mirrors argv":
   check runCode("require('std/env').args().join(',')",

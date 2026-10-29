@@ -12,9 +12,10 @@ binDir        = "bin"
 # Dependencies
 
 requires "nim >= 2.2.10"
+requires "datpkgr >= 0.1.11"
 requires "javascriptcore >= 0.1.0"
+
+requires "nimcypher >= 0.2.5"
 requires "openparser >= 0.4.1"
 requires "powpow >= 0.2.4"
-requires "datpkgr >= 0.1.11"
-requires "nimcypher >= 0.2.5"
 requires "semver >= 1.2.3"

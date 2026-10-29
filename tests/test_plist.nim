@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/plist
+
+registerStd("std/plist", plist.install)
 
 test "plist parse xml dict":
   let res = runCode(

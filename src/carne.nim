@@ -3,13 +3,14 @@
 # Library API: runCode / runFile from ./carne/runtime.
 # CLI: `carne run <script.js> [args]`, --help, --version.
 
-import std/[os, parseopt]
-
-import ./carne/cli
 import ./carne/runtime
 export runtime
 
 when isMainModule:
+  import std/[os, parseopt]
+
+  import ./carne/cli
+  import ./carne/std/all
   import ./carne/pkg/pkgman
 
   proc runScriptFile(filePath: string; extraArgs: seq[string]): int =

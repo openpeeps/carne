@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/vcard
+
+registerStd("std/vcard", vcard.install)
 
 const sampleCard =
   "\"BEGIN:VCARD\\r\\nVERSION:4.0\\r\\nFN:Ada Lovelace\\r\\n" &

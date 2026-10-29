@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/feed
+
+registerStd("std/feed", feed.install)
 
 const sampleRss =
   "\"<?xml version=\\\"1.0\\\"?><rss version=\\\"2.0\\\"><channel>" &

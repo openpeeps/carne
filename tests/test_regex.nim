@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/regex
+
+registerStd("std/regex", regex.install)
 
 test "regex test searches like RegExp":
   check runCode("require('std/regex').test('\\\\d+', 'abc123')") == "true"

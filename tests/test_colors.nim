@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/colors
+
+registerStd("std/colors", colors.install)
 
 test "colors parse named and hex":
   check runCode(

@@ -2,6 +2,10 @@ import std/strutils
 import unittest
 
 import carne
+import carne/modules
+import carne/std/env
+
+registerStd("std/env", env.install)
 
 test "require unknown module raises":
   expect CarneError:

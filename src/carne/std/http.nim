@@ -33,6 +33,7 @@ from powpow/loop import stop
 from powpow/net/tls import SslContext, newClientTlsContext
 
 import ../bridge
+import ../modules
 
 type
   FetchOpts = object
@@ -361,6 +362,10 @@ proc closeAllServers*() =
     except CatchableError:
       discard
     httpClients.del(k)
+
+# Teardown hook: runs at runtime teardown when this module is linked in
+# (binary, or tests that register std/http). Safe with none live.
+onTeardown = closeAllServers
 
 ## Builds the std/http namespace object.
 init proc(module: Module) =

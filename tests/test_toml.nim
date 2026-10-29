@@ -1,6 +1,10 @@
 import unittest
 
 import carne
+import carne/modules
+import carne/std/toml
+
+registerStd("std/toml", toml.install)
 
 test "toml parse document":
   let res = runCode(
