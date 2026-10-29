@@ -34,12 +34,13 @@ script that just runs, take Carne.
 
 ## 😍 Key Features
 - JavaScript runtime powered by JavaScriptCore
-- Powerful Standard Library
-- Built-in cryptographic library via [pkg/nimcypher](https://github.com/nimbase/nimcypher)
+- Powerful Standard Library fully written in Nim lang
+- Cryptographic library via [pkg/nimcypher](https://github.com/nimbase/nimcypher)
 - HTTP/1.1, H/2, UDP, TCP and WebSockets library via [pkg/powpow](https://github.com/openpeeps/powpow)
 - Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`, `sql`, `colors`, `css`, `diff`, `qr`, `svg` via [pkg/openparser](https://github.com/openpeeps/openparser)
-- Built-in JIT compiled Regex Engine
-- Built-in i18n via GNU Gettext PO/MO
+- JIT compiled Regex Engine
+- i18n via GNU Gettext PO/MO
+- CSS and JavaScript bundler via [pkg/squeezy](https://github.com/openpeeps/squeezy)
 - Built-in package manager (`carne pkg`)
   - one shared global store in your home dir, no `node_modules`,
     no duplicated installs across projects
@@ -75,6 +76,9 @@ Packages
   -h, --help              show this help
   --version               show version
 ```
+
+## Package manager
+This is a DFS (depth-first search) package manager that currently points to nowhere. Built using [pkg/datpkgr](https://github.com/openpeeps/datpkgr), the same engine used at [tim](https://github.com/openpeeps/tim), [clue](https://github.com/openpeeps/clue), [bowdy](https://github.com/openpeeps/bowdy).
 
 ## Standard Library
 
