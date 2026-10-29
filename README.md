@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="https://github.com/openpeeps/carne/blob/main/.github/carne_logo.png" alt="CarneJS Logo" width="140px" height="140px"><br>
-  Carne, a JavaScript runtime  👑 Written in Nim language
+  <img src="https://github.com/openpeeps/carne/blob/main/.github/carne_logo.png" alt="Carne Logo" width="140px" height="140px"><br>
+  Carne /kär-nē/ &bullet; a JavaScript runtime 👑 Written in Nim language
 </p>
 
 <p align="center">
