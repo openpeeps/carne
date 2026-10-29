@@ -96,7 +96,8 @@ and npm-style sources:
   anything else is rejected, not installed.
 - `carne pkg install <name>[@range]`, `npm:name@range` aliases:
   resolved through the package registry.
-- `carne pkg develop <path>`: editable installs from a local directory.
+- `carne pkg develop [path]`: editable installs from a local directory
+  (default: current dir).
 - `remove`, `update`, `list`, `prune`, `refresh` manage the store.
 
 > [!NOTE]
@@ -122,8 +123,7 @@ A `@version` suffix pins an installed version
 inside a package.
 
 Only CommonJS v1: ESM (`import`/`export`) packages fail with a clear
-error, as do packages with no loadable entry. Use an absolute path
-with `carne pkg develop` (a relative path links the wrong directory).
+error, as do packages with no loadable entry.
 
 ## Standard Library
 

@@ -34,7 +34,7 @@ when isMainModule:
     echo "  remove <name> [version]     " & grey("uninstall one version, or all versions")
     echo "  update [name]               " & grey("update one package, or all")
     echo "  list                        " & grey("list installed packages")
-    echo "  develop <path>              " & grey("editable install from a local directory")
+    echo "  develop [path]              " & grey("editable install from a local directory (default: current dir)")
     echo "  prune                       " & grey("remove orphaned packages")
     echo "  refresh                     " & grey("re-download registry data")
 
@@ -93,11 +93,12 @@ when isMainModule:
         echo errPrefix() & " " & e.msg
       return 1
     of "develop":
-      if args.len != 2:
-        echo errPrefix() & " directory is required (usage: carne pkg develop <path>)"
+      if args.len > 2:
+        echo errPrefix() & " usage: carne pkg develop [path]"
         return 1
+      let dir = if args.len == 2: args[1] else: getCurrentDir()
       try:
-        if cfg.pkgDevelop(args[1]):
+        if cfg.pkgDevelop(dir):
           return 0
       except CatchableError as e:
         echo errPrefix() & " " & e.msg
