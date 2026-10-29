@@ -28,7 +28,7 @@ when isMainModule:
   proc printPkgHelp() =
     echo "usage: carne pkg <install|remove|update|list|develop|prune|refresh> [args]"
     echo ""
-    echo "  install <spec> [--url=...]  " & grey("install by registry name, git URL, or name + source URL")
+    echo "  install <spec> [--url=...]  " & grey("registry name, git URL, gh:user/repo alias, name#ref, or name + source URL")
     echo "  remove <name> [version]     " & grey("uninstall one version, or all versions")
     echo "  update [name]               " & grey("update one package, or all")
     echo "  list                        " & grey("list installed packages")

@@ -99,16 +99,48 @@ proc newCarnePkgConfig*(rootPath = "", debug = false,
   if ensureSource:
     result.ensurePkgSource()
 
+proc splitRef(spec: string): tuple[clean, refStr: string] =
+  ## Split a `#ref` (branch/tag) suffix off an install spec.
+  let pos = spec.find('#')
+  if pos < 0:
+    (spec, "")
+  else:
+    (spec[0 ..< pos].strip(), spec[pos + 1 .. ^1].strip())
+
 proc pkgInstall*(cfg: DatpkgrConfig, spec: string, url = "",
     verbose = true): bool =
   ## Install one package: `spec` is a registry name (needs the carne
-  ## packages source), a git URL, or a name with explicit `--url`.
-  if url.len > 0:
-    cfg.installPackage(spec, url = url, verbose = verbose)
-  elif isGitUrl(spec):
-    cfg.installPackage(pkgNameFromUrl(spec), url = spec, verbose = verbose)
+  ## packages source), a git URL, a forge alias (`gh:user/repo`, ...),
+  ## any of those with a `#ref` (branch/tag) suffix, or a name with
+  ## explicit `--url`.
+  var name = spec.strip()
+  var srcUrl = url.strip()
+  if srcUrl.len == 0 and isForgeAliasShape(name):
+    # `gh:user/repo` installs straight from git, like a written-out
+    # https URL. Unknown `x:y` shapes keep the legacy behavior (looked
+    # up as a registry name) instead of raising here.
+    try: name = expandForgeAlias(name)
+    except ValueError: discard
+  var refStr = ""
+  if srcUrl.len > 0:
+    if isForgeAliasShape(srcUrl):
+      try: srcUrl = expandForgeAlias(srcUrl)
+      except ValueError: discard
+    let parts = splitRef(srcUrl)
+    srcUrl = parts.clean
+    refStr = parts.refStr
+  if srcUrl.len > 0:
+    cfg.installPackage(name, refStr, url = srcUrl, verbose = verbose)
+  elif isGitUrl(name) or name.startsWith("file://"):
+    let parts = splitRef(name)
+    cfg.installPackage(pkgNameFromUrl(parts.clean), parts.refStr,
+      url = parts.clean, verbose = verbose)
   else:
-    cfg.installPackage(spec, verbose = verbose)
+    let parts = splitRef(name)
+    if parts.refStr.len > 0:
+      cfg.installPackage(parts.clean, parts.refStr, verbose = verbose)
+    else:
+      cfg.installPackage(name, verbose = verbose)
 
 proc pkgRemove*(cfg: DatpkgrConfig, name: string,
     version = ""): bool =

@@ -87,8 +87,13 @@ at [tim](https://github.com/openpeeps/tim),
 and npm-style sources:
 
 - `carne pkg install <git-url>` (or `--url=...` to pin a source URL):
-  `git+`/`git://` transports, `github:`/`gitlab:`/`bitbucket:`
-  shorthands, `git@` and `.git` URLs. Works today.
+  `https://` URLs, `git+`/`git://` transports, `git@` and `.git` URLs,
+  plus forge aliases (`gh:user/repo`, long form `github:`; also `gl:`,
+  `cb:`, `srht:`). A `#ref`
+  suffix pins a branch or tag: `carne pkg install gh:user/repo#v1`.
+  Works today.
+- The cloned repo must contain a valid `package.json` at its root;
+  anything else is rejected, not installed.
 - `carne pkg install <name>[@range]`, `npm:name@range` aliases:
   resolved through the package registry.
 - `carne pkg develop <path>`: editable installs from a local directory.

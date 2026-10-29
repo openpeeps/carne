@@ -1,4 +1,4 @@
-import std/[options, os]
+import std/[options, os, strutils, tables]
 import unittest
 
 import carne/pkg/pkgman
@@ -8,6 +8,20 @@ proc freshHome(): string =
   if dirExists(result):
     removeDir(result)
   createDir(result)
+
+proc gitInitCommit(dir: string) =
+  ## `git init` + commit everything in `dir` (test fixtures only).
+  discard execShellCmd("git -C " & quoteShell(dir) & " init -q")
+  discard execShellCmd("git -C " & quoteShell(dir) & " add -A")
+  discard execShellCmd("git -C " & quoteShell(dir) &
+    " -c user.email=t@t -c user.name=t commit -qm init")
+
+proc makeJsRepo(dir, name, version: string) =
+  ## Minimal JS package fixture: package.json + main entry.
+  createDir(dir / "src")
+  writeFile(dir / "package.json", "{\"name\": \"" & name &
+    "\", \"version\": \"" & version & "\", \"main\": \"src/index.js\"}")
+  writeFile(dir / "src" / "index.js", "console.log('hi');\n")
 
 test "config roots at override and registers source":
   let home = freshHome()
@@ -64,3 +78,67 @@ test "entry point fallbacks":
   let empty = home / "fixture-empty"
   createDir(empty)
   check cfg.packageEntryPoint(empty, "empty") == ""
+
+test "forge alias expansion":
+  check expandForgeAlias("gh:openpeeps/tim") ==
+    "https://github.com/openpeeps/tim"
+  check expandForgeAlias("github:openpeeps/tim") ==
+    "https://github.com/openpeeps/tim"
+  check expandForgeAlias("gl:group/proj") == "https://gitlab.com/group/proj"
+  check isForgeAliasShape("gh:openpeeps/tim")
+  check not isForgeAliasShape("https://github.com/openpeeps/tim")
+  check not isForgeAliasShape("greet")
+  expect ValueError:
+    discard expandForgeAlias("npm:foo@1.2")
+
+test "url install of js repo (basename differs from package name)":
+  let home = freshHome()
+  defer: removeDir(home)
+  let cfg = newCarnePkgConfig(rootPath = home)
+  let repo = home / "some-checkout-dir"
+  makeJsRepo(repo, "greet-url", "0.2.0")
+  gitInitCommit(repo)
+  check cfg.pkgInstall("greet-url", url = repo)
+  let resolved = cfg.resolvePkgImport("pkg/greet-url")
+  check resolved.isSome
+  check resolved.get.fileExists
+
+test "url install rejects repo without package.json":
+  let home = freshHome()
+  defer: removeDir(home)
+  let cfg = newCarnePkgConfig(rootPath = home)
+  let repo = home / "not-a-package"
+  createDir(repo)
+  writeFile(repo / "README.md", "# hello\n")
+  gitInitCommit(repo)
+  check not cfg.pkgInstall("nogood", url = repo)
+  check not cfg.installedRecordsAll().hasKey("nogood")
+  check not dirExists(cfg.pkgsCachePath() / "nogood")
+
+test "url install rejects invalid package.json":
+  let home = freshHome()
+  defer: removeDir(home)
+  let cfg = newCarnePkgConfig(rootPath = home)
+  let repo = home / "bad-manifest"
+  createDir(repo)
+  writeFile(repo / "package.json", """{"version": "1.0.0"}""")
+  gitInitCommit(repo)
+  check not cfg.pkgInstall("bad", url = repo)
+  check not cfg.installedRecordsAll().hasKey("bad")
+
+test "url install with #ref checks out the branch":
+  let home = freshHome()
+  defer: removeDir(home)
+  let cfg = newCarnePkgConfig(rootPath = home)
+  let repo = home / "ref-repo"
+  makeJsRepo(repo, "greet-ref", "0.1.0")
+  gitInitCommit(repo)
+  discard execShellCmd("git -C " & quoteShell(repo) & " checkout -qb feature")
+  writeFile(repo / "src" / "index.js", "console.log('feature');\n")
+  discard execShellCmd("git -C " & quoteShell(repo) & " add -A")
+  discard execShellCmd("git -C " & quoteShell(repo) &
+    " -c user.email=t@t -c user.name=t commit -qm feature")
+  check cfg.pkgInstall("greet-ref", url = repo & "#feature")
+  let resolved = cfg.resolvePkgImport("pkg/greet-ref")
+  check resolved.isSome
+  check readFile(resolved.get).contains("feature")
