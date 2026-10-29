@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <code>nimble install carne</code> / <code>clue install carne --build</code>
+  <code>clue install carne --build</code>
 </p>
 
 <p align="center">
@@ -13,12 +13,13 @@
 </p>
 
 > [!NOTE]
-> Carne is still experimental: it runs on macOS only, the `std/*` API
+> Carne is still experimental: it runs on macOS and Linux
+> (Linux needs `libjavascriptcoregtk-4.1-dev` installed), the `std/*` API
 > may change between 0.x releases, and a few modules are parse-only
 > in v1 (see the Standard Library notes below). Scripts needing
 > top-level `await` must wrap in an async IIFE for now. Not recommended
-> for production yet, but the full test suite passes and every example
-> below is covered by it.
+> for production yet, but the full test suite passes on both platforms
+> and every example below is covered by it.
 
 ## About
 A JavaScript runtime based on JavaScriptCore and Nim. No drama, no overhype. With a rich
@@ -414,7 +415,7 @@ timers, truly async, no threads.
 - [ ] `std/gettext`: `.mo` support; `std/qr`: decode; `std/svg`: stringify
 - [ ] `exportClass` in the module DSL
 - [ ] Public package registry (`carne/pkgs`)
-- [ ] Beyond macOS
+- [x] Beyond macOS (Linux via JavaScriptCoreGTK 4.1)
 
 ## Examples
 ...

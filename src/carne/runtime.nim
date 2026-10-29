@@ -2,7 +2,8 @@
 #
 # Installs console.log (+ print alias), process.argv, global require and
 # the timer globals, evaluates the script, then drains the loop while
-# async work remains. macOS only (system JavaScriptCore).
+# async work remains. macOS and Linux (system JavaScriptCore /
+# JavaScriptCoreGTK 4.1).
 
 import std/strutils
 import std/tables

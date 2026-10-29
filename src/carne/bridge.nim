@@ -12,6 +12,16 @@ import pkg/openparser/json
 
 import javascriptcore
 
+when defined(linux):
+  # WebKitGTK declares JSValueRef as `const struct OpaqueJSValue*` while the
+  # bindings use a non-const pointer, so every `exception: ptr JSValueRef`
+  # out-param mismatches the header's `const JSValueRef*` and GCC 14 turns
+  # -Wincompatible-pointer-types into a hard error. Upstream silences only
+  # the clang spelling of this diagnostic, so add the GCC spelling here in
+  # bridge (imported by the runtime and every std module): it covers the
+  # binary and all test binaries in one place.
+  {.passC: "-Wno-incompatible-pointer-types".}
+
 import powpow/types
 import powpow/loop
 
@@ -52,8 +62,8 @@ proc setCurrentRt*(rt: Runtime) =
 
 proc ensureLoop*(rt: Runtime): Loop =
   ## Creates the run's powpow loop on first async need (timers, fetch,
-  ## serve) and returns it. Pure-sync scripts never pay for kqueue +
-  ## table preallocation. Every `inc rt.pending` site must go through
+  ## serve) and returns it. Pure-sync scripts never pay for the event
+  ## backend (kqueue on macOS, epoll on Linux) + table preallocation. Every `inc rt.pending` site must go through
   ## here first, so pending > 0 implies a live loop.
   if rt.loop == nil:
     rt.loop = newLoop()

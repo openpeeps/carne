@@ -1,4 +1,4 @@
-# Carne - a JavaScript runtime on JavaScriptCore (macOS-first).
+# Carne - a JavaScript runtime on JavaScriptCore (macOS + Linux).
 #
 # Library API: runCode / runFile from ./carne/runtime.
 # CLI: `carne run <script.js> [args]`, --help, --version.
