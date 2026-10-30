@@ -598,14 +598,15 @@ wrk 4.2.0, `wrk -t4 -c100 -d10s` after a 2s warmup, port 3000, macOS,
 node v22.22.1, bun 1.4.4). Each server answers `200 text/plain
 "hello world"` to every request:
 
-| Runtime | Requests/sec | Avg latency |
-|---------|--------------|-------------|
-| carne | 96287.79 | 1.03ms |
-| node | 37236.49 | 2.79ms |
-| bun | 81649.88 | 1.23ms |
+| Runtime | Requests/sec | Avg latency | Max RSS |
+|---------|--------------|-------------|---------|
+| carne | 95242.01 | 1.05ms | 11.1 MB |
+| node | 41131.89 | 2.52ms | 61.5 MB |
+| bun | 86160.61 | 1.17ms | 31.1 MB |
 
 Bodies are byte-identical (11 bytes); headers differ per runtime, so
-`Transfer/sec` is not directly comparable.
+`Transfer/sec` is not directly comparable. Max RSS is sampled via
+`ps` during the measured run (includes shared libraries).
 
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/carne/issues)

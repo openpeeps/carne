@@ -25,7 +25,7 @@ fi
 
 bench_one() {
   local name="$1"; shift
-  local log out rps lat
+  local log out rps lat rssfile maxrss
   log="$(mktemp /tmp/carne_http_hello_XXXX.log)"
   "$@" >"$log" 2>&1 &
   local pid=$!
@@ -42,23 +42,33 @@ bench_one() {
     echo "== $name never became ready =="; cat "$log"; rm -f "$log"; return 1
   fi
   wrk -t$THREADS -c$CONNS -d$WARMUP "$URL" >/dev/null 2>&1
+  rssfile="$(mktemp /tmp/carne_http_rss_XXXX.log)"
+  ( while kill -0 $pid 2>/dev/null; do
+      ps -o rss= -p $pid 2>/dev/null || break
+      sleep 0.2
+    done > "$rssfile" ) &
+  local samp=$!
   out="$(wrk -t$THREADS -c$CONNS -d$DURATION "$URL" 2>&1)"
   kill $pid 2>/dev/null; wait $pid 2>/dev/null; trap - RETURN
+  kill $samp 2>/dev/null; wait $samp 2>/dev/null
   rm -f "$log"
   sleep 2
   rps="$(echo "$out" | awk '/Requests\/sec:/ {print $2}')"
   lat="$(echo "$out" | awk '$1 == "Latency" {print $2}')"
+  maxrss="$(awk 'BEGIN{m=0} $1+0>m{m=$1} END{printf "%.1f", m/1024}' "$rssfile")"
+  rm -f "$rssfile"
   [ -z "$rps" ] && rps="FAILED"
   [ -z "$lat" ] && lat="FAILED"
+  [ -z "$maxrss" ] && maxrss="FAILED"
   echo "== $name =="; echo "$out" | tail -n 6; echo ""
-  echo "| $name | $rps | $lat |"
+  echo "| $name | $rps | $lat | ${maxrss} MB |"
 }
 
 echo ""
 echo "## HTTP hello-world Results (wrk -t$THREADS -c$CONNS -d$DURATION, port $PORT)"
 echo ""
-echo "| Runtime | Requests/sec | Avg latency |"
-echo "|---------|--------------|-------------|"
+echo "| Runtime | Requests/sec | Avg latency | Max RSS |"
+echo "|---------|--------------|-------------|---------|"
 
 bench_one "carne" "$CARNE_BIN" run "$BENCH_DIR/server.carne.js"
 bench_one "node" node "$BENCH_DIR/server.node.js"
