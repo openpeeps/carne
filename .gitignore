@@ -1,10 +1,4 @@
 .DS_Store
-nimcache/
-nimblecache/
-htmldocs/
-testresults/
-/tests/*
-!/tests/*.nim
-!/tests/*.nims
-clue.lock
-bin/
+booyaka.db
+booyaka.search.db
+logs
