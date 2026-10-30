@@ -651,10 +651,10 @@ with `{workers: 4}` (`bench/http-hello/server.carne.workers.js`):
 
 | Runtime | Requests/sec | Avg latency | Max RSS |
 |---------|--------------|-------------|---------|
-| carne | 95317.62 | 1.08ms | 11.0 MB |
-| carne-workers | 142424.24 | 694.97us | 28.0 MB |
-| node | 39661.32 | 2.61ms | 61.8 MB |
-| bun | 87750.13 | 1.14ms | 35.0 MB |
+| carne | 91330.44 | 1.15ms | 10.9 MB |
+| carne-workers | 144029.68 | 739.70us | 28.3 MB |
+| node | 38576.69 | 2.71ms | 61.5 MB |
+| bun | 86878.46 | 1.15ms | 31.1 MB |
 
 Bodies are byte-identical (11 bytes); headers differ per runtime, so
 `Transfer/sec` is not directly comparable. Max RSS is sampled via
