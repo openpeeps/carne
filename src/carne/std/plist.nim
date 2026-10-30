@@ -2,7 +2,7 @@
 #
 #   const plist = require("std/plist");
 #   plist.parse(data)      -> value (XML plists; binary plists arrive
-#                             through std/fs readFile passthrough)
+#                             through std/os readFile passthrough)
 #   plist.stringify(value) -> string (XML plist)
 
 import std/json

@@ -1,10 +1,10 @@
 const env = require("std/env");
-const fs = require("std/fs");
+const os = require("std/os");
 
 console.log("cwd: " + env.cwd());
 console.log("args: " + env.args().join(","));
 
 const path = env.args()[2] || "/tmp/carne_demo.txt";
-fs.writeFile(path, "written by carne");
-console.log("read back: " + fs.readFile(path));
-console.log("exists: " + fs.exists(path));
+os.writeFile(path, "written by carne");
+console.log("read back: " + os.readFile(path));
+console.log("exists: " + os.exists(path));

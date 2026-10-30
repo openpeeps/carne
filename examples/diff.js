@@ -1,5 +1,5 @@
 const diff = require("std/diff");
-const fs = require("std/fs");
+const os = require("std/os");
 
 const before = ["line one", "line two", "line three", "line four"].join("\n") + "\n";
 const after = ["line one", "LINE TWO", "line three", "line five"].join("\n") + "\n";
@@ -18,6 +18,6 @@ for (const h of d.hunks) {
 const patch = diff.unified(before, after);
 console.log("--- patch ---");
 console.log(patch);
-fs.writeFile("/tmp/carne_demo.patch", patch);
-console.log("wrote " + fs.readFile("/tmp/carne_demo.patch").length + " bytes");
-fs.remove("/tmp/carne_demo.patch");
+os.writeFile("/tmp/carne_demo.patch", patch);
+console.log("wrote " + os.readFile("/tmp/carne_demo.patch").length + " bytes");
+os.remove("/tmp/carne_demo.patch");

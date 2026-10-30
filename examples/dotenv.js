@@ -1,6 +1,6 @@
 const dotenv = require("std/dotenv");
 const env = require("std/env");
-const fs = require("std/fs");
+const os = require("std/os");
 
 const parsed = dotenv.parse([
   "# demo env",
@@ -16,7 +16,7 @@ console.log("parsed GREETING: " + parsed.GREETING);
 console.log("parsed RAW: " + parsed.RAW);
 
 const tmp = "/tmp/carne_dotenv_demo";
-fs.writeFile(tmp, "CARNE_DEMO_LOADED=it-works\n");
+os.writeFile(tmp, "CARNE_DEMO_LOADED=it-works\n");
 dotenv.load(tmp);
 console.log("loaded into env: " + env.getenv("CARNE_DEMO_LOADED"));
-fs.remove(tmp);
+os.remove(tmp);

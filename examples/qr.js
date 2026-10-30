@@ -1,13 +1,13 @@
 const qr = require("std/qr");
-const fs = require("std/fs");
+const os = require("std/os");
 
 // Terminal rendering for humans, SVG for everything else.
 const q = qr.encode("https://example.com/menu");
 console.log("size: " + q.size + "x" + q.size);
 console.log(q.terminal);
-fs.writeFile("/tmp/carne_demo_qr.svg", q.svg);
-console.log("svg bytes: " + fs.readFile("/tmp/carne_demo_qr.svg").length);
-fs.remove("/tmp/carne_demo_qr.svg");
+os.writeFile("/tmp/carne_demo_qr.svg", q.svg);
+console.log("svg bytes: " + os.readFile("/tmp/carne_demo_qr.svg").length);
+os.remove("/tmp/carne_demo_qr.svg");
 
 // Higher correction survives scrambled printouts.
 for (const level of ["L", "H"])

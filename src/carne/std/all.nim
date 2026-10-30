@@ -7,7 +7,7 @@
 import ../modules
 
 import ./env
-import ./fs
+import ./os
 import ./yaml
 import ./toml
 import ./ical
@@ -35,7 +35,7 @@ import ./ws
 import ./uuid
 
 registerStd("std/env", env.install)
-registerStd("std/fs", fs.install)
+registerStd("std/os", os.install)
 registerStd("std/yaml", yaml.install)
 registerStd("std/toml", toml.install)
 registerStd("std/ical", ical.install)

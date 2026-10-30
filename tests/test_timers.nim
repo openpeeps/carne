@@ -1,11 +1,13 @@
-import std/os
+from std/os import `/`, fileExists, getTempDir, removeFile
 import unittest
 
 import carne
 import carne/modules
-import carne/std/fs
+from carne/std/os import install
+## Both std/os (above) and carne/std/os bind the name `os`: never
+## qualify with bare `os` in this file, use `install` unqualified.
 
-registerStd("std/fs", fs.install)
+registerStd("std/os", install)
 
 proc tmpPath(name: string): string =
   getTempDir() / ("carne_test_" & name)
@@ -13,25 +15,25 @@ proc tmpPath(name: string): string =
 test "setTimeout fires and drains":
   let p = tmpPath("t1.txt")
   defer: removeFile(p)
-  discard runCode("const fs = require('std/fs'); " &
-    "setTimeout(() => fs.writeFile('" & p & "', 'fired'), 10)")
+  discard runCode("const os = require('std/os'); " &
+    "setTimeout(() => os.writeFile('" & p & "', 'fired'), 10)")
   check readFile(p) == "fired"
 
 test "timer order follows delay":
   let p = tmpPath("t2.txt")
   defer: removeFile(p)
-  discard runCode("const fs = require('std/fs'); " &
-    "setTimeout(() => fs.writeFile('" & p & "', require('std/fs').readFile('" &
+  discard runCode("const os = require('std/os'); " &
+    "setTimeout(() => os.writeFile('" & p & "', require('std/os').readFile('" &
     p & "') + 'slow;'), 30); " &
-    "setTimeout(() => fs.writeFile('" & p & "', 'fast;'), 5)")
+    "setTimeout(() => os.writeFile('" & p & "', 'fast;'), 5)")
   check readFile(p) == "fast;slow;"
 
 test "setInterval with clearInterval":
   let p = tmpPath("t3.txt")
   defer: removeFile(p)
-  discard runCode("const fs = require('std/fs'); let n = 0; " &
+  discard runCode("const os = require('std/os'); let n = 0; " &
     "const id = setInterval(() => { n++; " &
-    "if (n == 3) { clearInterval(id); fs.writeFile('" & p & "', String(n)); } }, 10)")
+    "if (n == 3) { clearInterval(id); os.writeFile('" & p & "', String(n)); } }, 10)")
   check readFile(p) == "3"
 
 test "clearTimeout prevents fire":
@@ -39,18 +41,18 @@ test "clearTimeout prevents fire":
   let done = tmpPath("t4done.txt")
   defer: removeFile(p)
   defer: removeFile(done)
-  discard runCode("const fs = require('std/fs'); " &
-    "const id = setTimeout(() => fs.writeFile('" & p & "', 'x'), 50); " &
+  discard runCode("const os = require('std/os'); " &
+    "const id = setTimeout(() => os.writeFile('" & p & "', 'x'), 50); " &
     "clearTimeout(id); " &
-    "setTimeout(() => fs.writeFile('" & done & "', 'done'), 10)")
+    "setTimeout(() => os.writeFile('" & done & "', 'done'), 10)")
   check readFile(done) == "done"
   check not fileExists(p)
 
 test "timer rest args passthrough":
   let p = tmpPath("t5.txt")
   defer: removeFile(p)
-  discard runCode("const fs = require('std/fs'); " &
-    "setTimeout((a, b) => fs.writeFile('" & p & "', a + b), 10, 'x', 'y')")
+  discard runCode("const os = require('std/os'); " &
+    "setTimeout((a, b) => os.writeFile('" & p & "', a + b), 10, 'x', 'y')")
   check readFile(p) == "xy"
 
 test "uncaught timer error raises after drain":

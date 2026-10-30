@@ -1,5 +1,5 @@
 require("std/env");
-require("std/fs");
+require("std/os");
 require("std/yaml");
 require("std/toml");
 require("std/ical");

@@ -148,16 +148,29 @@ console.log(env.cwd());             // current directory
 env.exit(2);                        // terminate with exit code 2
 ```
 
-### `std/fs`, synchronous file system access
+### `std/os`, synchronous OS utilities
+
+File and dir access plus process helpers. Everything throws a JS
+Error on failure; `sleep` and `exec` block the loop.
 
 ```js
-const fs = require("std/fs");
-fs.writeFile("/tmp/hello.txt", "hi");
-console.log(fs.readFile("/tmp/hello.txt")); // "hi" (throws on IOError)
-console.log(fs.exists("/tmp/hello.txt"));   // true (files and dirs)
-console.log(fs.readDir("/tmp"));             // ["hello.txt", ...]
-fs.mkdir("/tmp/sub");                        // undefined
-fs.remove("/tmp/hello.txt");                 // files only
+const os = require("std/os");
+os.writeFile("/tmp/hello.txt", "hi");
+os.appendFile("/tmp/hello.txt", "!");
+console.log(os.readFile("/tmp/hello.txt")); // "hi!" (throws on IOError)
+console.log(os.exists("/tmp/hello.txt"));   // true (files and dirs)
+console.log(os.isFile("/tmp/hello.txt"));   // true
+console.log(os.readDir("/tmp"));             // [{name: "hello.txt", kind: "file"}, ...]
+console.log(os.stat("/tmp/hello.txt").size); // 3
+os.mkdir("/tmp/a/b", true);                  // recursive parents
+os.copy("/tmp/hello.txt", "/tmp/hi.txt");
+os.move("/tmp/hi.txt", "/tmp/ho.txt");
+os.remove("/tmp/ho.txt");                    // files only
+os.removeDir("/tmp/a", true);                // recursive tree delete
+console.log(os.tmpdir(), os.homedir());      // dirs (plus configDir/cacheDir)
+console.log(os.pid());                       // process id
+os.sleep(10);                                // ms, blocks
+console.log(os.exec("echo hi").output.trim()); // {code: 0, output: "hi\n"}
 ```
 
 ### Timers, globals, no require
