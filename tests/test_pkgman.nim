@@ -14,7 +14,7 @@ proc gitInitCommit(dir: string) =
   discard execShellCmd("git -C " & quoteShell(dir) & " init -q")
   discard execShellCmd("git -C " & quoteShell(dir) & " add -A")
   discard execShellCmd("git -C " & quoteShell(dir) &
-    " -c user.email=t@t -c user.name=t commit -qm init")
+    " commit -qm init")
 
 proc makeJsRepo(dir, name, version: string) =
   ## Minimal JS package fixture: package.json + main entry.
@@ -138,7 +138,7 @@ test "url install with #ref checks out the branch":
   writeFile(repo / "src" / "index.js", "console.log('feature');\n")
   discard execShellCmd("git -C " & quoteShell(repo) & " add -A")
   discard execShellCmd("git -C " & quoteShell(repo) &
-    " -c user.email=t@t -c user.name=t commit -qm feature")
+    " commit -qm feature")
   check cfg.pkgInstall("greet-ref", url = repo & "#feature")
   let resolved = cfg.resolvePkgImport("pkg/greet-ref")
   check resolved.isSome

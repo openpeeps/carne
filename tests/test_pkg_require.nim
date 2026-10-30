@@ -14,7 +14,7 @@ proc freshHome(): string =
 proc gitCommit(dir, msg: string) =
   discard execShellCmd("git -C " & quoteShell(dir) & " add -A")
   discard execShellCmd("git -C " & quoteShell(dir) &
-    " -c user.email=t@t -c user.name=t commit -qm " & quoteShell(msg))
+    " commit -qm " & quoteShell(msg))
 
 proc gitInit(dir: string) =
   discard execShellCmd("git -C " & quoteShell(dir) & " init -q")
