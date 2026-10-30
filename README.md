@@ -546,6 +546,25 @@ handler fires too when given). `wss://` clients use a shared TLS
 context with system CAs; serving `wss://` needs cert loading and is
 out of scope in v1.
 
+### `std/uuid`
+
+UUID generation (v1-v8) and inspection over openparser. Both call
+styles work: flat `uuid4()` (destructurable) and `v4()` methods.
+`parse`, `version`, `variant` and `isNil` throw on invalid input;
+`isValid` never throws.
+
+```js
+const {uuid4} = require("std/uuid");
+console.log(uuid4().length); // 36
+
+const uuid = require("std/uuid");
+console.log(uuid.v4().length); // 36
+console.log(uuid.v7()); // time-ordered v7
+console.log(uuid.v5(uuid.NAMESPACE_DNS, "www.widgets.com")); // "21f7f8de-8051-5b89-8680-0195ef798b6a"
+console.log(uuid.version(uuid4()), uuid.variant(uuid4())); // 4 "rfc4122"
+console.log(uuid.isValid("nope"), uuid.isNil(uuid.NIL)); // false true
+```
+
 ## Roadmap
 - [x] JSC runtime: console/process/require/timers CLI
 - [x] Package management (`carne pkg`, manifests)
@@ -554,6 +573,7 @@ out of scope in v1.
 - [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/mimetype`, `std/benchmark`, `std/qr`, `std/svg`
 - [x] `std/http` (async client + server, tuning opts, method helpers) + top-level promise unwrap in `runCode`
 - [x] `std/ws` (async + sync client, server, binary/ping/protocol, `wss://` client)
+- [x] `std/uuid` (v1-v8 generation, parse/inspect, RFC namespace constants)
 - [x] Lazy startup (deferred event loop, per-run TLS, cached spec data)
 - [x] Benchmark suite + results
 - [ ] Top-level await in scripts (currently needs an async IIFE)

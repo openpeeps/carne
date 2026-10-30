@@ -23,3 +23,4 @@ require("std/benchmark");
 require("std/qr");
 require("std/svg");
 require("std/http");
+require("std/uuid");
