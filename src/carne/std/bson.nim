@@ -44,13 +44,8 @@ proc opaqueToBytes(s: string): string =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(data: string):
       ## bson.parse(data) -> value
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var data: string
-      if not strArg(ctx, args, 0, "parse", exception, data):
-        return nil
       try:
         let raw = opaqueToBytes(data)
         var bs = newSeq[byte](raw.len)
@@ -61,12 +56,10 @@ init proc(module: Module) =
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
-    module.registerFn stringify:
+    module.registerFn stringify(value: JSValueRef):
       ## bson.stringify(value) -> data (opaque, do not read as text)
-      if not checkArity(argumentCount, 1, 1, "stringify", ctx, exception):
-        return nil
       var err = ""
-      let node = jsToJson(ctx, args[0], err)
+      let node = jsToJson(ctx, value, err)
       if node == nil:
         throwError(ctx, "stringify: " & err, exception)
         return nil

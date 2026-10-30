@@ -58,13 +58,8 @@ proc pathToJson(p: Path): JsonNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## path.parse(text) -> local or network path object
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         returnJson(ctx, pathToJson(parsePath(text)), "parse", exception)
       except CatchableError as e:

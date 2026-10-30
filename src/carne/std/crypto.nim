@@ -52,154 +52,81 @@ proc parseKey32(s: string): Key32 =
   except ValueError:
     raise newException(ValueError, "key is not valid hex")
 
-proc getArgs(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef;
-    name, usage: string; wantMin, wantMax: int):
-    ptr UncheckedArray[JSValueRef] =
-  ## Arity check shared by every helper. nil on failure.
-  if not checkArity(argumentCount, wantMin, wantMax, name, ctx, exception,
-      usage):
-    return nil
-  cast[ptr UncheckedArray[JSValueRef]](arguments)
+proc cryptoErr(ctx: JSContextRef; docBlock, name, detail: string;
+    exception: ptr JSValueRef) =
+  ## Domain-error throw with the JSDoc block first (CLI info).
+  var msg = ""
+  if docBlock.len > 0:
+    msg = docBlock & "\n"
+  throwError(ctx, msg & name & ": " & detail, exception)
 
 # -- hash ------------------------------------------------------------
 
-proc doSha256(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doSha256(ctx: JSContextRef; text: string; docBlock: string;
+    exception: ptr JSValueRef): JSValueRef =
   const name = "hash.sha256hex"
-  const usage = "hash.sha256hex(text) -> hex digest"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 1, 1)
-  if args == nil:
-    return nil
-  var text: string
-  if not strArg(ctx, args, 0, name, exception, text):
-    return nil
   try:
     toJS(ctx, hexOut(sha256(text)))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doSha384(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doSha384(ctx: JSContextRef; text: string; docBlock: string;
+    exception: ptr JSValueRef): JSValueRef =
   const name = "hash.sha384hex"
-  const usage = "hash.sha384hex(text) -> hex digest"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 1, 1)
-  if args == nil:
-    return nil
-  var text: string
-  if not strArg(ctx, args, 0, name, exception, text):
-    return nil
   try:
     toJS(ctx, hexOut(sha384(text)))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doSha512(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doSha512(ctx: JSContextRef; text: string; docBlock: string;
+    exception: ptr JSValueRef): JSValueRef =
   const name = "hash.sha512hex"
-  const usage = "hash.sha512hex(text) -> hex digest"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 1, 1)
-  if args == nil:
-    return nil
-  var text: string
-  if not strArg(ctx, args, 0, name, exception, text):
-    return nil
   try:
     toJS(ctx, hexOut(sha512(text)))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doBlake2b(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doBlake2b(ctx: JSContextRef; text: string; size: int;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "hash.blake2bhex"
-  const usage = "hash.blake2bhex(text[, size]) -> hex digest (size 1..64, default 32)"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 1, 2)
-  if args == nil:
+  if size < 1 or size > 64:
+    cryptoErr(ctx, docBlock, name, "size must be 1..64", exception)
     return nil
-  var text: string
-  if not strArg(ctx, args, 0, name, exception, text):
-    return nil
-  var size = Blake2bDefaultDigestSize
-  if int(argumentCount) == 2:
-    var sizeNum = 0.0
-    if not numArg(ctx, args, 1, name, exception, sizeNum):
-      return nil
-    if not (sizeNum >= 1.0 and sizeNum <= 64.0 and
-        sizeNum == float(int(sizeNum))):
-      throwError(ctx, name & ": size must be an integer 1..64\n" & usage,
-        exception)
-      return nil
-    size = int(sizeNum)
   try:
     toJS(ctx, blakeHex(text, size).toLowerAscii())
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doHmacSha256(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doHmacSha256(ctx: JSContextRef; keyHex, text: string;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "hash.hmacSha256hex"
-  const usage = "hash.hmacSha256hex(keyHex, text) -> hex mac"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 2, 2)
-  if args == nil:
-    return nil
-  var keyHex, text: string
-  if not strArg(ctx, args, 0, name, exception, keyHex):
-    return nil
-  if not strArg(ctx, args, 1, name, exception, text):
-    return nil
   try:
     let key = parseBytes(keyHex, "key")
     toJS(ctx, hexOut(sha256Hmac(key, toBytes(text))))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
 # -- aead (XChaCha20-Poly1305) ----------------------------------------
 
-proc doSeal(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doSeal(ctx: JSContextRef; text, keyHex: string; docBlock: string;
+    exception: ptr JSValueRef): JSValueRef =
   const name = "aead.seal"
-  const usage = "aead.seal(text, keyHex) -> {nonce, mac, cipher}"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 2, 2)
-  if args == nil:
-    return nil
-  var text, keyHex: string
-  if not strArg(ctx, args, 0, name, exception, text):
-    return nil
-  if not strArg(ctx, args, 1, name, exception, keyHex):
-    return nil
   try:
     let msg = seal(text, parseKey32(keyHex))
     returnJson(ctx, %*{"nonce": hexOut(msg.nonce), "mac": hexOut(msg.mac),
       "cipher": hexOut(msg.cipherText)}, name, exception)
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doOpen(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doOpen(ctx: JSContextRef; envObj: JSValueRef; keyHex: string;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "aead.open"
-  const usage = "aead.open({nonce, mac, cipher}, keyHex) -> text"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 2, 2)
-  if args == nil:
-    return nil
-  var envObj: JSValueRef
-  if not objArg(ctx, args, 0, name, exception, envObj):
-    return nil
-  var keyHex: string
-  if not strArg(ctx, args, 1, name, exception, keyHex):
-    return nil
   try:
     var err = ""
     var nonceHex, macHex, cipherHex: string
@@ -222,39 +149,26 @@ proc doOpen(ctx: JSContextRef; argumentCount: csize_t;
       cipherText: parseBytes(cipherHex, "envelope.cipher"))
     toJS(ctx, toString(unseal(msg, parseKey32(keyHex))))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
 # -- sign (ed25519) ---------------------------------------------------
 
-proc doKeypair(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doKeypair(ctx: JSContextRef; docBlock: string;
+    exception: ptr JSValueRef): JSValueRef =
   const name = "sign.keypair"
-  const usage = "sign.keypair() -> {publicKey, secretKey} hex"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 0, 0)
-  if args == nil:
-    return nil
   try:
     let kp = generateSigningKeyPair()
     returnJson(ctx, %*{"publicKey": publicKeyToHex(kp.publicKey).toLowerAscii(),
       "secretKey": secretKeyToHex(kp.secretKey).toLowerAscii()}, name,
       exception)
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doKeypairFromSeed(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doKeypairFromSeed(ctx: JSContextRef; seedHex: string;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "sign.keypairFromSeed"
-  const usage = "sign.keypairFromSeed(seedHex) -> {publicKey, secretKey} hex"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 1, 1)
-  if args == nil:
-    return nil
-  var seedHex: string
-  if not strArg(ctx, args, 0, name, exception, seedHex):
-    return nil
   try:
     if seedHex.len != 64:
       raise newException(ValueError, "seed must be 64 hex chars (32 bytes)")
@@ -263,89 +177,49 @@ proc doKeypairFromSeed(ctx: JSContextRef; argumentCount: csize_t;
       "secretKey": secretKeyToHex(kp.secretKey).toLowerAscii()}, name,
       exception)
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doSign(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doSign(ctx: JSContextRef; secretHex, text: string;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "sign.sign"
-  const usage = "sign.sign(secretHex, text) -> hex signature"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 2, 2)
-  if args == nil:
-    return nil
-  var secretHex, text: string
-  if not strArg(ctx, args, 0, name, exception, secretHex):
-    return nil
-  if not strArg(ctx, args, 1, name, exception, text):
-    return nil
   try:
     let sig = sign(secretKeyFromHex(secretHex), text)
     toJS(ctx, signatureToHex(sig).toLowerAscii())
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doVerify(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doVerify(ctx: JSContextRef; publicHex, text, sigHex: string;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "sign.verify"
-  const usage = "sign.verify(publicHex, text, sigHex) -> bool"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 3, 3)
-  if args == nil:
-    return nil
-  var publicHex, text, sigHex: string
-  if not strArg(ctx, args, 0, name, exception, publicHex):
-    return nil
-  if not strArg(ctx, args, 1, name, exception, text):
-    return nil
-  if not strArg(ctx, args, 2, name, exception, sigHex):
-    return nil
   try:
     toJS(ctx, verify(publicKeyFromHex(publicHex), text,
       signatureFromHex(sigHex)))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
 # -- password (argon2id) -----------------------------------------------
 
-proc doPwHash(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doPwHash(ctx: JSContextRef; pw: string; docBlock: string;
+    exception: ptr JSValueRef): JSValueRef =
   const name = "password.hash"
-  const usage = "password.hash(pw) -> \"hex(salt):hex(hash)\""
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 1, 1)
-  if args == nil:
-    return nil
-  var pw: string
-  if not strArg(ctx, args, 0, name, exception, pw):
-    return nil
   try:
     # nimcypher hex is uppercase; the JS side is lowercase (verify
     # accepts both, so stored strings stay interoperable).
     toJS(ctx, hashPassword(pw).toLowerAscii())
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doPwVerify(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef): JSValueRef =
+proc doPwVerify(ctx: JSContextRef; pw, stored: string;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   const name = "password.verify"
-  const usage = "password.verify(pw, stored) -> bool"
-  let args = getArgs(ctx, argumentCount, arguments, exception, name,
-    usage, 2, 2)
-  if args == nil:
-    return nil
-  var pw, stored: string
-  if not strArg(ctx, args, 0, name, exception, pw):
-    return nil
-  if not strArg(ctx, args, 1, name, exception, stored):
-    return nil
   try:
     toJS(ctx, verifyPassword(pw, stored))
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg & "\n" & usage, exception)
+    cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
 
 ## Builds the std/crypto namespace object.
@@ -355,57 +229,57 @@ init proc(module: Module) =
   let signNs = newObject(module.ctx)
   let passwordNs = newObject(module.ctx)
 
-  ctx.registerFn hashSha256:
+  ctx.registerFn hashSha256(text: string):
     ## hash.sha256hex(text) -> hex digest
-    return doSha256(ctx, argumentCount, arguments, exception)
+    return doSha256(ctx, text, docBlock, exception)
 
-  ctx.registerFn hashSha384:
+  ctx.registerFn hashSha384(text: string):
     ## hash.sha384hex(text) -> hex digest
-    return doSha384(ctx, argumentCount, arguments, exception)
+    return doSha384(ctx, text, docBlock, exception)
 
-  ctx.registerFn hashSha512:
+  ctx.registerFn hashSha512(text: string):
     ## hash.sha512hex(text) -> hex digest
-    return doSha512(ctx, argumentCount, arguments, exception)
+    return doSha512(ctx, text, docBlock, exception)
 
-  ctx.registerFn hashBlake2b:
+  ctx.registerFn hashBlake2b(text: string, size: default(int64, Blake2bDefaultDigestSize)):
     ## hash.blake2bhex(text[, size]) -> hex digest (size 1..64, default 32)
-    return doBlake2b(ctx, argumentCount, arguments, exception)
+    return doBlake2b(ctx, text, size, docBlock, exception)
 
-  ctx.registerFn hashHmacSha256:
+  ctx.registerFn hashHmacSha256(keyHex: string, text: string):
     ## hash.hmacSha256hex(keyHex, text) -> hex mac
-    return doHmacSha256(ctx, argumentCount, arguments, exception)
+    return doHmacSha256(ctx, keyHex, text, docBlock, exception)
 
-  ctx.registerFn aeadSeal:
+  ctx.registerFn aeadSeal(text: string, keyHex: string):
     ## aead.seal(text, keyHex) -> {nonce, mac, cipher}
-    return doSeal(ctx, argumentCount, arguments, exception)
+    return doSeal(ctx, text, keyHex, docBlock, exception)
 
-  ctx.registerFn aeadOpen:
+  ctx.registerFn aeadOpen(envObj: JSObjectRef, keyHex: string):
     ## aead.open({nonce, mac, cipher}, keyHex) -> text
-    return doOpen(ctx, argumentCount, arguments, exception)
+    return doOpen(ctx, envObj, keyHex, docBlock, exception)
 
-  ctx.registerFn signKeypair:
+  ctx.registerFn signKeypair():
     ## sign.keypair() -> {publicKey, secretKey} hex
-    return doKeypair(ctx, argumentCount, arguments, exception)
+    return doKeypair(ctx, docBlock, exception)
 
-  ctx.registerFn signKeypairFromSeed:
+  ctx.registerFn signKeypairFromSeed(seedHex: string):
     ## sign.keypairFromSeed(seedHex) -> {publicKey, secretKey} hex
-    return doKeypairFromSeed(ctx, argumentCount, arguments, exception)
+    return doKeypairFromSeed(ctx, seedHex, docBlock, exception)
 
-  ctx.registerFn signSign:
+  ctx.registerFn signSign(secretHex: string, text: string):
     ## sign.sign(secretHex, text) -> hex signature
-    return doSign(ctx, argumentCount, arguments, exception)
+    return doSign(ctx, secretHex, text, docBlock, exception)
 
-  ctx.registerFn signVerify:
+  ctx.registerFn signVerify(publicHex: string, text: string, sigHex: string):
     ## sign.verify(publicHex, text, sigHex) -> bool
-    return doVerify(ctx, argumentCount, arguments, exception)
+    return doVerify(ctx, publicHex, text, sigHex, docBlock, exception)
 
-  ctx.registerFn passwordHash:
+  ctx.registerFn passwordHash(pw: string):
     ## password.hash(pw) -> "hex(salt):hex(hash)"
-    return doPwHash(ctx, argumentCount, arguments, exception)
+    return doPwHash(ctx, pw, docBlock, exception)
 
-  ctx.registerFn passwordVerify:
+  ctx.registerFn passwordVerify(pw: string, stored: string):
     ## password.verify(pw, stored) -> bool
-    return doPwVerify(ctx, argumentCount, arguments, exception)
+    return doPwVerify(ctx, pw, stored, docBlock, exception)
 
   # Plain-object property sets cannot throw; no setupEx in scope here.
   setProp(module.ctx, hashNs, "sha256hex",

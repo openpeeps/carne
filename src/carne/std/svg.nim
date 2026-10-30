@@ -40,13 +40,8 @@ proc svgToJson(n: SvgNode): JsonNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## svg.parse(text) -> {tag, attrs, children}
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         let doc = parseSvg(text)
         if doc.root == nil:

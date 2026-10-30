@@ -17,25 +17,18 @@ import ../bridge
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## plist.parse(data) -> value (XML or binary plist)
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         returnJson(ctx, parsePlist(text), "parse", exception)
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
-    module.registerFn stringify:
+    module.registerFn stringify(value: JSValueRef):
       ## plist.stringify(value) -> string (XML plist)
-      if not checkArity(argumentCount, 1, 1, "stringify", ctx, exception):
-        return nil
       var err = ""
-      let node = jsToJson(ctx, args[0], err)
+      let node = jsToJson(ctx, value, err)
       if node == nil:
         throwError(ctx, "stringify: " & err, exception)
         return nil

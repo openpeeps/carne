@@ -354,22 +354,26 @@ proc wsOnError(ws: WsConnection; err: string) {.gcsafe.} =
       e.rt.exitCode = 1
 
 proc readOneFn(ctx: JSContextRef; obj: JSValueRef; key, name: string;
-    exception: ptr JSValueRef; ok: var bool): JSObjectRef =
+    exception: ptr JSValueRef; ok: var bool;
+    docBlock = ""): JSObjectRef =
   ## Reads one optional handler fn; nil for absent/undefined. Protects the
   ## result. ok=false with a JS throw on anything else.
+  template oerr(msg: string): untyped =
+    throwError(ctx,
+      (if docBlock.len > 0: docBlock & "\n" else: "") & msg, exception)
   result = nil
   ok = true
   var err = ""
   let f = getField(ctx, obj, key, err)
   if err != "":
-    throwError(ctx, name & ": handlers." & key & " " & err, exception)
+    oerr(name & ": handlers." & key & " " & err)
     ok = false
     return
   if f.kind == nvkUndefined:
     return
   if f.kind != nvkFunction:
-    throwError(ctx, name & ": handlers." & key & " is not a function, got " &
-      jsTypeName(f.kind), exception)
+    oerr(name & ": handlers." & key & " is not a function, got " &
+      jsTypeName(f.kind))
     ok = false
     return
   result = f.raw
@@ -377,7 +381,7 @@ proc readOneFn(ctx: JSContextRef; obj: JSValueRef; key, name: string;
 
 proc readHandlers(ctx: JSContextRef; obj: JSValueRef; name: string;
     exception: ptr JSValueRef; onOpen, onMessage, onClose,
-    onError: var JSObjectRef): bool =
+    onError: var JSObjectRef; docBlock = ""): bool =
   ## Reads optional {onOpen?, onMessage?, onClose?, onError?} handler fns.
   ## nil obj means absent. True on success.
   onOpen = nil
@@ -387,18 +391,19 @@ proc readHandlers(ctx: JSContextRef; obj: JSValueRef; name: string;
   if obj == nil:
     return true
   var ok = false
-  onOpen = readOneFn(ctx, obj, "onOpen", name, exception, ok)
+  onOpen = readOneFn(ctx, obj, "onOpen", name, exception, ok, docBlock)
   if not ok:
     return false
-  onMessage = readOneFn(ctx, obj, "onMessage", name, exception, ok)
+  onMessage = readOneFn(ctx, obj, "onMessage", name, exception, ok,
+    docBlock)
   if not ok:
     unprotectHandlers(ctx, onOpen)
     return false
-  onClose = readOneFn(ctx, obj, "onClose", name, exception, ok)
+  onClose = readOneFn(ctx, obj, "onClose", name, exception, ok, docBlock)
   if not ok:
     unprotectHandlers(ctx, onOpen, onMessage)
     return false
-  onError = readOneFn(ctx, obj, "onError", name, exception, ok)
+  onError = readOneFn(ctx, obj, "onError", name, exception, ok, docBlock)
   if not ok:
     unprotectHandlers(ctx, onOpen, onMessage, onClose)
     return false
@@ -410,12 +415,8 @@ proc findConnByHandle(handle: JSObjectRef): pointer =
       return k
   nil
 
-proc connSendImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
+registerFn(ctx, connSend(text: string)):
   ## conn.send(text): thisObject is the handle created by connect/serve.
-  if not checkArity(argumentCount, 1, 1, "send", ctx, exception):
-    return nil
   if thisObject == nil or not JSValueIsObject(ctx, thisObject):
     throwError(ctx, "send: called on an invalid connection", exception)
     return nil
@@ -424,10 +425,6 @@ proc connSendImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
     throwError(ctx, "send: connection is closed", exception)
     return nil
   let e = wsConns[key]
-  let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-  var text: string
-  if not strArg(ctx, args, 0, "send", exception, text):
-    return nil
   if e.closing or e.closed or e.ws == nil or not e.openOk:
     throwError(ctx, "send: connection is closed", exception)
     return nil
@@ -438,13 +435,9 @@ proc connSendImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
     return nil
   toJS(ctx, true)
 
-proc connCloseImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
+registerFn(ctx, connClose(code: default(int64, 1000), reason ?: string)):
   ## conn.close([code[, reason]]): final, idempotent; the pending slot is
   ## released when the close lands (or at teardown).
-  if not checkArity(argumentCount, 0, 2, "close", ctx, exception):
-    return nil
   if thisObject == nil or not JSValueIsObject(ctx, thisObject):
     throwError(ctx, "close: called on an invalid connection", exception)
     return nil
@@ -452,20 +445,10 @@ proc connCloseImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
   if key == nil:
     return toJS(ctx, true)
   var e = wsConns[key]
-  var code = 1000
-  var reason = ""
-  if int(argumentCount) >= 1:
-    let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-    var codeF = 0.0
-    if not numArg(ctx, args, 0, "close", exception, codeF):
-      return nil
-    if codeF != codeF or int(codeF) < 1000 or int(codeF) > 4999:
-      throwError(ctx, "close: code must be 1000..4999", exception)
-      return nil
-    code = int(codeF)
-    if int(argumentCount) == 2:
-      if not strArg(ctx, args, 1, "close", exception, reason):
-        return nil
+  if code < 1000 or code > 4999:
+    throwError(ctx, "close: code must be 1000..4999", exception)
+    return nil
+  let codeNum = int(code)
   if e.ws == nil or e.ws.conn == nil:
     # Nothing on the wire yet: no close event will ever arrive, so release
     # now. A late loop.connect still lands safely: its dispatcher finds a
@@ -484,7 +467,7 @@ proc connCloseImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
   e.closing = true
   wsConns[key] = e
   try:
-    e.ws.closeWs(code, reason)
+    e.ws.closeWs(codeNum, reason)
   except CatchableError:
     discard
   toJS(ctx, true)
@@ -493,12 +476,12 @@ proc makeConnHandle(ctx: JSContextRef; exception: ptr JSValueRef): JSObjectRef =
   ## Fresh `{send, close}` handle; caller protects it via the entry.
   result = newObject(ctx)
   var ex: JSValueRef = nil
-  setProp(ctx, result, "send", makeFunction(ctx, "send", connSendImpl),
+  setProp(ctx, result, "send", makeFunction(ctx, "send", connSend),
     addr ex)
   if ex != nil:
     throwError(ctx, "ws: could not create connection handle", exception)
     return nil
-  setProp(ctx, result, "close", makeFunction(ctx, "close", connCloseImpl),
+  setProp(ctx, result, "close", makeFunction(ctx, "close", connClose),
     addr ex)
   if ex != nil:
     throwError(ctx, "ws: could not create connection handle", exception)
@@ -644,29 +627,34 @@ onTeardown.add(closeAllWs)
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn serve:
+    module.registerFn serve(port: int64, hostOrHandlers: JSValueRef,
+        handlers ?: JSObjectRef):
       ## ws.serve(port[, host], handlers) -> {port, host}
-      if not checkArity(argumentCount, 2, 3, "serve", ctx, exception):
-        return nil
-      var portF = 0.0
-      if not numArg(ctx, args, 0, "serve", exception, portF):
-        return nil
-      if portF != portF or int(portF) < 1 or int(portF) > 65535:
+      if port < 1 or port > 65535:
         throwError(ctx, "serve: port must be 1..65535", exception)
         return nil
-      let port = int(portF)
+      let portNum = int(port)
+      let n = int(argumentCount)
       var host = "127.0.0.1"
-      var handlersIdx = 1
-      if int(argumentCount) == 3:
-        if not strArg(ctx, args, 1, "serve", exception, host):
-          return nil
-        handlersIdx = 2
       var handlersObj: JSValueRef = nil
-      if not objArg(ctx, args, handlersIdx, "serve", exception, handlersObj):
-        return nil
+      if n == 2:
+        if not objRefCheck(ctx, hostOrHandlers, "serve", "handlers",
+            docBlock, exception):
+          return nil
+        handlersObj = hostOrHandlers
+      else:
+        var herr = ""
+        let h = fromJS(ctx, hostOrHandlers, herr)
+        if herr != "" or h.kind != nvkString:
+          throwTypeMismatch(ctx, "serve", "host",
+            (if herr != "": "unreadable" else: jsTypeName(h.kind)),
+            "string", docBlock, exception)
+          return nil
+        host = h.s
+        handlersObj = handlers
       var onOpen, onMessage, onClose, onError: JSObjectRef
       if not readHandlers(ctx, handlersObj, "serve", exception, onOpen,
-          onMessage, onClose, onError):
+          onMessage, onClose, onError, docBlock):
         return nil
       let rt = currentRt()
       var wss = newWsServer(rt.ensureLoop())
@@ -726,7 +714,7 @@ init proc(module: Module) =
         {.cast(gcsafe).}:
           wsOnError(ws, err))
       try:
-        wss.listen(host, port)
+        wss.listen(host, portNum)
       except CatchableError as e:
         unprotectHandlers(ctx, onOpen, onMessage, onClose, onError)
         try:
@@ -737,24 +725,15 @@ init proc(module: Module) =
         return nil
       wsServers[sk] = ServerEntry(ctx: ctx, rt: rt, server: wss,
         onOpen: onOpen, onMessage: onMessage, onClose: onClose,
-        onError: onError, port: port, host: host)
+        onError: onError, port: portNum, host: host)
       inc rt.pending
-      returnJson(ctx, %*{"port": port, "host": host}, "serve", exception)
+      returnJson(ctx, %*{"port": portNum, "host": host}, "serve", exception)
 
-    module.registerFn connect:
+    module.registerFn connect(url: string, handlersObj ?: JSObjectRef):
       ## ws.connect(url[, handlers]) -> Promise<conn> (handshake on the loop)
-      if not checkArity(argumentCount, 1, 2, "connect", ctx, exception):
-        return nil
-      var url: string
-      if not strArg(ctx, args, 0, "connect", exception, url):
-        return nil
-      var handlersObj: JSValueRef = nil
-      if int(argumentCount) == 2:
-        if not objArg(ctx, args, 1, "connect", exception, handlersObj):
-          return nil
       var onOpen, onMessage, onClose, onError: JSObjectRef
       if not readHandlers(ctx, handlersObj, "connect", exception, onOpen,
-          onMessage, onClose, onError):
+          onMessage, onClose, onError, docBlock):
         return nil
       var resolveFn, rejectFn: JSObjectRef
       var mkEx: JSValueRef = nil
@@ -775,17 +754,8 @@ init proc(module: Module) =
         return nil
       promise
 
-    module.registerFn connectSync:
+    module.registerFn connectSync(url: string, optsObj ?: JSObjectRef):
       ## ws.connectSync(url[, {timeoutMs?, onOpen?, ...}]) -> established conn
-      if not checkArity(argumentCount, 1, 2, "connectSync", ctx, exception):
-        return nil
-      var url: string
-      if not strArg(ctx, args, 0, "connectSync", exception, url):
-        return nil
-      var optsObj: JSValueRef = nil
-      if int(argumentCount) == 2:
-        if not objArg(ctx, args, 1, "connectSync", exception, optsObj):
-          return nil
       var timeoutMs = DefaultWsTimeoutMs
       if optsObj != nil:
         var err = ""
@@ -809,7 +779,7 @@ init proc(module: Module) =
             return nil
       var onOpen, onMessage, onClose, onError: JSObjectRef
       if not readHandlers(ctx, optsObj, "connectSync", exception, onOpen,
-          onMessage, onClose, onError):
+          onMessage, onClose, onError, docBlock):
         return nil
       let rt = currentRt()
       let st = SyncState(done: false, ok: false, msg: "")
@@ -856,26 +826,21 @@ init proc(module: Module) =
       throwError(ctx, "connectSync: " & msg, exception)
       nil
 
-    module.registerFn close:
+    module.registerFn close(port: int64):
       ## ws.close(port) -> bool
-      if not checkArity(argumentCount, 1, 1, "close", ctx, exception):
-        return nil
-      var portF = 0.0
-      if not numArg(ctx, args, 0, "close", exception, portF):
-        return nil
-      if portF != portF or int(portF) < 1 or int(portF) > 65535:
+      if port < 1 or port > 65535:
         throwError(ctx, "close: port must be 1..65535", exception)
         return nil
-      let port = int(portF)
+      let portNum = int(port)
       var skey: pointer = nil
       var found = false
       for k, se in wsServers.pairs:
-        if se.port == port:
+        if se.port == portNum:
           skey = k
           found = true
           break
       if not found:
-        throwError(ctx, "close: no server on port " & $port, exception)
+        throwError(ctx, "close: no server on port " & $portNum, exception)
         return nil
       let se = wsServers[skey]
       # Server-side conns die with the listener: drop their entries first

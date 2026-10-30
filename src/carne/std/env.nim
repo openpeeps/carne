@@ -20,7 +20,7 @@ init proc(module: Module) =
   ## Builds the std/env namespace object.
   exportObject:
 
-    module.registerFn args:
+    module.registerFn args():
       ## env.args() -> process.argv as a fresh array
       let rt = currentRt()
       var vals: seq[JSValueRef] = @[]
@@ -38,18 +38,13 @@ init proc(module: Module) =
         return nil
       arr
 
-    module.registerFn getenv:
+    module.registerFn getenv(key: string):
       ## env.getenv("HOME") -> string | undefined
-      if not checkArity(argumentCount, 1, 1, "getenv", ctx, exception):
-        return nil
-      var key: string
-      if not strArg(ctx, args, 0, "getenv", exception, key):
-        return nil
       if not existsEnv(key):
         return JSValueMakeUndefined(ctx)
       toJS(ctx, getEnv(key))
 
-    module.registerFn cwd:
+    module.registerFn cwd():
       ## env.cwd() -> string
       try:
         toJS(ctx, getCurrentDir())
@@ -57,12 +52,8 @@ init proc(module: Module) =
         throwError(ctx, "cwd: " & e.msg, exception)
         nil
 
-    module.registerFn exit:
+    module.registerFn exit(code ?: float):
       ## env.exit(2) -> terminates the run with exit code 2
-      var code = 0.0
-      if argumentCount > 0 and arguments != nil:
-        if not numArg(ctx, args, 0, "exit", exception, code):
-          return nil
       let rt = currentRt()
       rt.exitCode = int(code)
       rt.exitRequested = true

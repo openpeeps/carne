@@ -21,23 +21,19 @@ import ./std/timers
 
 export bridge
 
-proc consoleLogImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
-  ## Implements console.log / print: joins args with spaces on stdout.
+registerFn(ctx, consoleLog(rest: RestArgs)):
+  ## console.log(...): joins args with spaces on stdout.
   var parts: seq[string] = @[]
-  if argumentCount > 0 and arguments != nil:
-    let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-    for i in 0 ..< int(argumentCount):
-      var ex: JSValueRef = nil
-      let s = JSValueToStringCopy(ctx, args[i], addr ex)
-      if s == nil:
-        if ex != nil and exception != nil:
-          exception[] = ex
-        return nil
-      let text = $s
-      JSStringRelease(s)
-      parts.add(text)
+  for v in rest:
+    var ex: JSValueRef = nil
+    let s = JSValueToStringCopy(ctx, v, addr ex)
+    if s == nil:
+      if ex != nil and exception != nil:
+        exception[] = ex
+      return nil
+    let text = $s
+    JSStringRelease(s)
+    parts.add(text)
   echo parts.join(" ")
   JSValueMakeUndefined(ctx)
 
@@ -89,7 +85,7 @@ proc thenFnOf(ctx: JSContextRef; v: JSValueRef): JSObjectRef =
 proc installConsole(ctx: JSContextRef; setupEx: ptr JSValueRef) =
   ## Installs global `console.log` and a `print` alias.
   let global = JSContextGetGlobalObject(ctx)
-  let logFn = makeFunction(ctx, "log", consoleLogImpl)
+  let logFn = makeFunction(ctx, "log", consoleLog)
   let consoleObj = newObject(ctx)
   setProp(ctx, consoleObj, "log", logFn, setupEx)
   setProp(ctx, global, "console", consoleObj, setupEx)

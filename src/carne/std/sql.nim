@@ -44,45 +44,25 @@ proc sqlToJson(n: SqlNode): JsonNode =
       kids.add(sqlToJson(child))
     result["children"] = kids
 
-proc doParse(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef;
-    driver: SqlDriver; name: string): JSValueRef =
-  let usage = name & "(sql) -> AST object"
-  if not checkArity(argumentCount, 1, 1, name, ctx, exception, usage):
-    return nil
-  let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-  var v: NimValue
-  if not nimArg(ctx, args, 0, name, exception, v):
-    return nil
-  var text: string
-  try:
-    text = v.asString(name)
-  except CatchableError as e:
-    throwError(ctx, e.msg & "\n" & usage, exception)
-    return nil
+proc sqlErr(ctx: JSContextRef; docBlock, name, detail: string;
+    exception: ptr JSValueRef) =
+  ## Domain-error throw with the JSDoc block first (CLI info).
+  var msg = ""
+  if docBlock.len > 0:
+    msg = docBlock & "\n"
+  throwError(ctx, msg & name & ": " & detail, exception)
+
+proc doParse(ctx: JSContextRef; text: string; driver: SqlDriver;
+    name, docBlock: string; exception: ptr JSValueRef): JSValueRef =
   try:
     returnJson(ctx, sqlToJson(parseSql(text, driver)), name, exception)
   except CatchableError as e:
     # SqlParseError text starts with a newline + code snippet.
-    throwError(ctx, name & ":" & e.msg & "\n" & usage, exception)
+    sqlErr(ctx, docBlock, name, e.msg, exception)
     nil
 
-proc doValidate(ctx: JSContextRef; argumentCount: csize_t;
-    arguments: ptr JSValueRef; exception: ptr JSValueRef;
-    driver: SqlDriver; name: string): JSValueRef =
-  let usage = name & "(sql) -> {valid, error?}"
-  if not checkArity(argumentCount, 1, 1, name, ctx, exception, usage):
-    return nil
-  let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-  var v: NimValue
-  if not nimArg(ctx, args, 0, name, exception, v):
-    return nil
-  var text: string
-  try:
-    text = v.asString(name)
-  except CatchableError as e:
-    throwError(ctx, e.msg & "\n" & usage, exception)
-    return nil
+proc doValidate(ctx: JSContextRef; text: string; driver: SqlDriver;
+    name, docBlock: string; exception: ptr JSValueRef): JSValueRef =
   try:
     discard parseSql(text, driver)
     returnJson(ctx, %*{"valid": true}, name, exception)
@@ -98,35 +78,29 @@ init proc(module: Module) =
   let postgresNs = newObject(module.ctx)
   let mysqlNs = newObject(module.ctx)
 
-  ctx.registerFn sqliteParse:
+  ctx.registerFn sqliteParse(sql: string):
     ## sqlite.parse(sql) -> AST object
-    return doParse(ctx, argumentCount, arguments, exception, sqlite,
-      "sqlite.parse")
+    return doParse(ctx, sql, sqlite, "sqlite.parse", docBlock, exception)
 
-  ctx.registerFn sqliteValidate:
+  ctx.registerFn sqliteValidate(sql: string):
     ## sqlite.validate(sql) -> {valid, error?}
-    return doValidate(ctx, argumentCount, arguments, exception, sqlite,
-      "sqlite.validate")
+    return doValidate(ctx, sql, sqlite, "sqlite.validate", docBlock, exception)
 
-  ctx.registerFn postgresParse:
+  ctx.registerFn postgresParse(sql: string):
     ## postgres.parse(sql) -> AST object
-    return doParse(ctx, argumentCount, arguments, exception, pgsql,
-      "postgres.parse")
+    return doParse(ctx, sql, pgsql, "postgres.parse", docBlock, exception)
 
-  ctx.registerFn postgresValidate:
+  ctx.registerFn postgresValidate(sql: string):
     ## postgres.validate(sql) -> {valid, error?}
-    return doValidate(ctx, argumentCount, arguments, exception, pgsql,
-      "postgres.validate")
+    return doValidate(ctx, sql, pgsql, "postgres.validate", docBlock, exception)
 
-  ctx.registerFn mysqlParse:
+  ctx.registerFn mysqlParse(sql: string):
     ## mysql.parse(sql) -> AST object
-    return doParse(ctx, argumentCount, arguments, exception, mysql,
-      "mysql.parse")
+    return doParse(ctx, sql, mysql, "mysql.parse", docBlock, exception)
 
-  ctx.registerFn mysqlValidate:
+  ctx.registerFn mysqlValidate(sql: string):
     ## mysql.validate(sql) -> {valid, error?}
-    return doValidate(ctx, argumentCount, arguments, exception, mysql,
-      "mysql.validate")
+    return doValidate(ctx, sql, mysql, "mysql.validate", docBlock, exception)
 
   # Plain-object property sets cannot throw; no setupEx in scope here.
   setProp(module.ctx, sqliteNs, "parse",

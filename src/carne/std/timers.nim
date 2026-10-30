@@ -52,33 +52,18 @@ proc fireTimer(rt: Runtime; jsId: int) =
     releaseTimer(rt, entry)
     decPending(rt)
 
-proc scheduleTimer(ctx: JSContextRef; function: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef; name: string;
-    isInterval: bool): JSValueRef {.cdecl.} =
-  if int(argumentCount) < 2:
-    throwError(ctx, name & ": expected at least 2 argument(s), got " &
-      $int(argumentCount), exception)
-    return nil
-  let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
-  var fnVal: NimValue
-  if not nimArg(ctx, args, 0, name, exception, fnVal):
-    return nil
+proc scheduleTimerFn(ctx: JSContextRef; fnVal: NimValue; delay: float;
+    rest: RestArgs; name: string; isInterval: bool;
+    docBlock: string; exception: ptr JSValueRef): JSValueRef =
   if fnVal.kind != nvkFunction:
-    throwError(ctx, name & ": first argument is not a function, got " &
-      jsTypeName(fnVal.kind), exception)
-    return nil
-  var delay = 0.0
-  if not numArg(ctx, args, 1, name, exception, delay):
+    throwTypeMismatch(ctx, name, "fn", jsTypeName(fnVal.kind), "function",
+      docBlock, exception)
     return nil
   var delayMs = int(delay)
   if delay != delay or delayMs < 0:
     delayMs = 0
   let rt = currentRt()
-  let fn = args[0]
-  var rest: seq[JSValueRef] = @[]
-  for i in 2 ..< int(argumentCount):
-    rest.add(args[i])
+  let fn = fnVal.raw
   JSValueProtect(ctx, fn)
   for v in rest:
     JSValueProtect(ctx, v)
@@ -95,26 +80,21 @@ proc scheduleTimer(ctx: JSContextRef; function: JSObjectRef;
     isInterval: isInterval)
   toJS(ctx, jsId)
 
-proc setTimeoutImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
-  scheduleTimer(ctx, function, argumentCount, arguments, exception,
-    "setTimeout", false)
+registerFn(ctx, setTimeoutCb(fn: NimValue, delay: float, rest: RestArgs)):
+  ## setTimeout(fn, ms, ...args) -> numeric id
+  scheduleTimerFn(ctx, fn, delay, rest, "setTimeout", false, docBlock,
+    exception)
 
-proc setIntervalImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
-  scheduleTimer(ctx, function, argumentCount, arguments, exception,
-    "setInterval", true)
+registerFn(ctx, setIntervalCb(fn: NimValue, delay: float, rest: RestArgs)):
+  ## setInterval(fn, ms, ...args) -> numeric id
+  scheduleTimerFn(ctx, fn, delay, rest, "setInterval", true, docBlock,
+    exception)
 
-proc clearTimerImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
-    argumentCount: csize_t; arguments: ptr JSValueRef;
-    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
-  ## Implements both clearTimeout and clearInterval. Unknown ids are no-ops.
-  if int(argumentCount) > 0 and arguments != nil:
-    let args = cast[ptr UncheckedArray[JSValueRef]](arguments)
+registerFn(ctx, clearTimerCb(id ?: JSValueRef)):
+  ## clearTimeout(id) / clearInterval(id): unknown ids are no-ops.
+  if id != nil:
     var ex: JSValueRef = nil
-    let idNum = JSValueToNumber(ctx, args[0], addr ex)
+    let idNum = JSValueToNumber(ctx, id, addr ex)
     if ex == nil:
       let rt = currentRt()
       let jsId = int(idNum)
@@ -130,10 +110,10 @@ proc installTimers*(rt: Runtime; setupEx: ptr JSValueRef) =
   ## Installs the timer globals.
   let global = JSContextGetGlobalObject(rt.ctx)
   setProp(rt.ctx, global, "setTimeout",
-    makeFunction(rt.ctx, "setTimeout", setTimeoutImpl), setupEx)
+    makeFunction(rt.ctx, "setTimeout", setTimeoutCb), setupEx)
   setProp(rt.ctx, global, "setInterval",
-    makeFunction(rt.ctx, "setInterval", setIntervalImpl), setupEx)
+    makeFunction(rt.ctx, "setInterval", setIntervalCb), setupEx)
   setProp(rt.ctx, global, "clearTimeout",
-    makeFunction(rt.ctx, "clearTimeout", clearTimerImpl), setupEx)
+    makeFunction(rt.ctx, "clearTimeout", clearTimerCb), setupEx)
   setProp(rt.ctx, global, "clearInterval",
-    makeFunction(rt.ctx, "clearInterval", clearTimerImpl), setupEx)
+    makeFunction(rt.ctx, "clearInterval", clearTimerCb), setupEx)

@@ -1,4 +1,4 @@
-# std module DSL (built 2026-10-28)
+# std module DSL (built 2026-10-28, typed params 2026-10-30)
 
 ## Shape
 ```nim
@@ -6,7 +6,7 @@ init proc(module: Module) =
   exportObject:
     module.property greeting = "hi"
 
-    module.registerFn readFile:
+    module.registerFn readFile(path: string):
       ## fs.readFile(path) -> string (throws on IOError)
       ...
 ```
@@ -21,17 +21,51 @@ init proc(module: Module) =
   `std/sql`: callbacks defined as setup statements, attached with
   `setProp` to child objects created via `newObject`). Setup has no
   `setupEx` in scope, so wiring passes `nil` (plain-object sets cannot
-  throw). Shared Nim helpers (`doParse`/`doValidate`) take an explicit
-  `name` and build their own `usage` lines, since `##` collection only
-  reaches calls inside the callback body itself. Timers stays fully
-  manual: globals + `setupEx` + shared helper.
+  throw). Shared Nim helpers (`doParse`/`doValidate`) now take extracted
+  values + `docBlock` (the rendered JSDoc, in scope in every body) for
+  their error paths. `registerFn(ctx, name(...)):` is the top-level form
+  (used by `std/ws` handle methods, `std/timers`, runtime `console.log`);
+  `ctx.registerFn` needs a declared `ctx`, which only exists inside
+  `init`-generated code.
 - `module.property` attaches data: `propToJS` overloads for
   string/int/int64/float/bool/JsonNode; anything else fails at the line.
-- Leading `##` in a member body is collected and appended to that
-  member's `throwError` messages and `checkArity` usage line
-  (`checkArity` grew `usage: string = ""`). No doc = zero behavior change.
+- Leading `##` in a member body is collected and rendered as a JSDoc
+  block (`jsDocBlock`): the block prefixes generated type mismatches and
+  is appended to arity and `throwError` messages (bool helpers that throw
+  from outside the body take `docBlock` explicitly). No doc = bare
+  messages, zero behavior change.
 - Blank line + `##` usage above... no: `##` goes INSIDE the body as the
   first statement; blank line separates members.
+
+## Typed params (2026-10-30)
+- Every header declares types; a bare name is a build error pointing at
+  the form (`name()` for zero args). Arity (min from required, max from
+  total) and one reader per param generate at compile time.
+- Per-param forms: `name: Type` (required), `name ?: Type` (optional,
+  zero default), `name: default(Type, value)` (optional, explicit
+  default; used 3x: dotenv path, mix weight, conn close code).
+- Type names map to `JsArgKind` (`bridge.nim`): `string`, `int`/`int64`
+  (integral floats accepted), `float` (ints widen), `bool`, `NimValue`
+  (snapshot of anything), `JSObjectRef` (checked live object, arrays
+  rejected), `JSValueRef` (raw live ref: overload dispatch, JS-coercion
+  and JSON-serialize passthroughs), `RestArgs` (variadic tail, last
+  only, open max via `checkArityMin`). Unknown names are a build error.
+- Rules enforced at compile time: required-after-optional, RestArgs
+  last/once, reserved param names (`ctx function thisObject
+  argumentCount arguments exception args docBlock`).
+- Parser shapes: command-position headers parse as ObjConstr
+  (colon-first) or Call (`?`-first/`()`); the normalizer accepts both,
+  skipping Empty nodes. Multi-declare (`a, b: T`) is unsupported.
+  `?:` needs spaces both sides (Spacing warning otherwise).
+- Generated scope per body: the bindings plus `args` (pre-cast),
+  `argumentCount`, `docBlock`. Overloaded middles (serve port/host)
+  dispatch on `int(argumentCount)` with `throwTypeMismatch` + `docBlock`.
+- Domain readers went value-form (`colors.colorVal`, `diff.readOpts`,
+  `ws.readHandlers`, `gettext.openTemp` take `docBlock`, default `""`).
+  Raising helpers need nothing (body catch + `addErrorContext`).
+- Error format: type errors are block-first
+  (`/*...*/\ntype mismatch parameter: \`p\`. Got \`a\`, expected \`w\``);
+  arity/body errors keep message-first with the block appended.
 
 ## Macro findings (Nim 2.2.10)
 - `quote` is hygienic here: injected bodies cannot see quote-introduced
@@ -76,3 +110,6 @@ init proc(module: Module) =
 - 18/18 suites pass; error output verified to carry usage lines, e.g.
   `readFile: cannot open: /no/such/file` + `fs.readFile(path) -> ...`.
 - Only `test_manifest`/`test_require` assert message text (non-DSL).
+- Typed params: 31/31 suites green; `test_nimvalue` locks the new
+  format (JSDoc block first on mismatch, after on arity) and the
+  `default()` weight passthrough via `colors.mix`.

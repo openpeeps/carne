@@ -371,17 +371,8 @@ onTeardown.add(closeAllServers)
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn fetch:
+    module.registerFn fetch(url: string, optsObj ?: JSObjectRef):
       ## http.fetch(url[, {method, headers, body, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
-      if not checkArity(argumentCount, 1, 2, "fetch", ctx, exception):
-        return nil
-      var url: string
-      if not strArg(ctx, args, 0, "fetch", exception, url):
-        return nil
-      var optsObj: JSValueRef = nil
-      if int(argumentCount) == 2:
-        if not objArg(ctx, args, 1, "fetch", exception, optsObj):
-          return nil
       var opts: FetchOpts
       try:
         opts = parseOpts(ctx, optsObj, "fetch", true, true)
@@ -390,17 +381,8 @@ init proc(module: Module) =
         return nil
       startFetch(ctx, currentRt(), url, opts, "fetch", exception)
 
-    module.registerFn get:
+    module.registerFn get(url: string, optsObj ?: JSObjectRef):
       ## http.get(url[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
-      if not checkArity(argumentCount, 1, 2, "get", ctx, exception):
-        return nil
-      var url: string
-      if not strArg(ctx, args, 0, "get", exception, url):
-        return nil
-      var optsObj: JSValueRef = nil
-      if int(argumentCount) == 2:
-        if not objArg(ctx, args, 1, "get", exception, optsObj):
-          return nil
       var opts: FetchOpts
       try:
         opts = parseOpts(ctx, optsObj, "get", false, false)
@@ -409,19 +391,9 @@ init proc(module: Module) =
         return nil
       startFetch(ctx, currentRt(), url, opts, "get", exception)
 
-    module.registerFn post:
+    module.registerFn post(url: string, body: string,
+        optsObj ?: JSObjectRef):
       ## http.post(url, body[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
-      if not checkArity(argumentCount, 2, 3, "post", ctx, exception):
-        return nil
-      var url, body: string
-      if not strArg(ctx, args, 0, "post", exception, url):
-        return nil
-      if not strArg(ctx, args, 1, "post", exception, body):
-        return nil
-      var optsObj: JSValueRef = nil
-      if int(argumentCount) == 3:
-        if not objArg(ctx, args, 2, "post", exception, optsObj):
-          return nil
       var opts: FetchOpts
       try:
         opts = parseOpts(ctx, optsObj, "post", false, false)
@@ -432,38 +404,47 @@ init proc(module: Module) =
       opts.body = body
       startFetch(ctx, currentRt(), url, opts, "post", exception)
 
-    module.registerFn serve:
+    module.registerFn serve(port: int64, hostOrHandler: JSValueRef,
+        handler ?: JSObjectRef):
       ## http.serve(port[, host], handler) -> {port, host}
-      if not checkArity(argumentCount, 2, 3, "serve", ctx, exception):
-        return nil
-      var portF = 0.0
-      if not numArg(ctx, args, 0, "serve", exception, portF):
-        return nil
-      if portF != portF or int(portF) < 1 or int(portF) > 65535:
+      if port < 1 or port > 65535:
         throwError(ctx, "serve: port must be 1..65535", exception)
         return nil
-      let port = int(portF)
+      let portNum = int(port)
+      let n = int(argumentCount)
       var host = "127.0.0.1"
-      var handlerIdx = 1
-      if int(argumentCount) == 2:
-        handlerIdx = 1
-      else:
-        if not strArg(ctx, args, 1, "serve", exception, host):
+      var handlerV: JSValueRef = nil
+      if n == 2:
+        var herr0 = ""
+        let hv0 = fromJS(ctx, hostOrHandler, herr0)
+        if herr0 != "" or hv0.kind != nvkFunction:
+          throwTypeMismatch(ctx, "serve", "handler",
+            (if herr0 != "": "unreadable" else: jsTypeName(hv0.kind)),
+            "function", docBlock, exception)
           return nil
-        handlerIdx = 2
-      var handlerVal: NimValue
-      if not nimArg(ctx, args, handlerIdx, "serve", exception, handlerVal):
+        handlerV = hostOrHandler
+      else:
+        var herr = ""
+        let h = fromJS(ctx, hostOrHandler, herr)
+        if herr != "" or h.kind != nvkString:
+          throwTypeMismatch(ctx, "serve", "host",
+            (if herr != "": "unreadable" else: jsTypeName(h.kind)),
+            "string", docBlock, exception)
+          return nil
+        host = h.s
+        handlerV = handler
+      var ferr = ""
+      let hv = fromJS(ctx, handlerV, ferr)
+      if ferr != "" or hv.kind != nvkFunction:
+        throwTypeMismatch(ctx, "serve", "handler",
+          (if ferr != "": "unreadable" else: jsTypeName(hv.kind)),
+          "function", docBlock, exception)
         return nil
-      if handlerVal.kind != nvkFunction:
-        throwError(ctx, "serve: handler is not a function, got " &
-          jsTypeName(handlerVal.kind), exception)
-        return nil
-      let handlerV = handlerVal.raw
       let rt = currentRt()
       var server = newHttpServer(rt.ensureLoop(), populate = false)
       server.handler = httpOnRequest
       try:
-        server.listen(host, port)
+        server.listen(host, portNum)
       except CatchableError as e:
         try:
           server.close()
@@ -475,24 +456,19 @@ init proc(module: Module) =
       inc rt.pending
       httpServers[cast[pointer](server)] =
         ServerEntry(ctx: ctx, rt: rt, server: server, handlerFn: handlerV,
-          port: port, host: host)
-      returnJson(ctx, %*{"port": port, "host": host}, "serve", exception)
+          port: portNum, host: host)
+      returnJson(ctx, %*{"port": portNum, "host": host}, "serve", exception)
 
-    module.registerFn close:
+    module.registerFn close(port: int64):
       ## http.close(port) -> bool
-      if not checkArity(argumentCount, 1, 1, "close", ctx, exception):
-        return nil
-      var portF = 0.0
-      if not numArg(ctx, args, 0, "close", exception, portF):
-        return nil
-      if portF != portF or int(portF) < 1 or int(portF) > 65535:
+      if port < 1 or port > 65535:
         throwError(ctx, "close: port must be 1..65535", exception)
         return nil
-      let port = int(portF)
+      let portNum = int(port)
       var target: ServerEntry
       var found = false
       for k, e in httpServers.pairs:
-        if e.port == port:
+        if e.port == portNum:
           target = e
           found = true
           break

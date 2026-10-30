@@ -20,15 +20,18 @@ import ../bridge
 
 proc readOpts(ctx: JSContextRef; obj: JSValueRef;
     name: string; exception: ptr JSValueRef;
-    opts: var DiffOptions): bool =
+    opts: var DiffOptions; docBlock = ""): bool =
   ## Reads {context?} lazily; absent and undefined both mean default.
+  template oerr(msg: string): untyped =
+    throwError(ctx,
+      (if docBlock.len > 0: docBlock & "\n" else: "") & msg, exception)
   opts = DiffOptions()
   if obj == nil:
     return true
   var err = ""
   let f = getField(ctx, obj, "context", err)
   if err != "":
-    throwError(ctx, name & ": options.context " & err, exception)
+    oerr(name & ": options.context " & err)
     return false
   var c = DiffContext
   case f.kind
@@ -38,16 +41,14 @@ proc readOpts(ctx: JSContextRef; obj: JSValueRef;
     c = int(f.i)
   of nvkFloat:
     if f.f != trunc(f.f):
-      throwError(ctx, name & ": options.context must be an integer",
-        exception)
+      oerr(name & ": options.context must be an integer")
       return false
     c = int(f.f)
   else:
-    throwError(ctx, name & ": options.context must be an integer",
-      exception)
+    oerr(name & ": options.context must be an integer")
     return false
   if c < -1:
-    throwError(ctx, name & ": options.context must be >= -1", exception)
+    oerr(name & ": options.context must be >= -1")
     return false
   opts.context = c
   true
@@ -84,21 +85,12 @@ proc diffToJson(d: Diff): JsonNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn diff:
+    module.registerFn diff(a: string, b: string,
+        optsObj ?: JSObjectRef):
       ## diff.diff(a, b[, {context}]) -> {identical, stats, hunks}
-      if not checkArity(argumentCount, 2, 3, "diff", ctx, exception):
-        return nil
-      var a, b: string
-      if not strArg(ctx, args, 0, "diff", exception, a):
-        return nil
-      if not strArg(ctx, args, 1, "diff", exception, b):
-        return nil
       var opts: DiffOptions
-      if int(argumentCount) == 3:
-        var optsObj: JSValueRef
-        if not objArg(ctx, args, 2, "diff", exception, optsObj):
-          return nil
-        if not readOpts(ctx, optsObj, "diff", exception, opts):
+      if optsObj != nil:
+        if not readOpts(ctx, optsObj, "diff", exception, opts, docBlock):
           return nil
       else:
         opts = DiffOptions()
@@ -108,21 +100,12 @@ init proc(module: Module) =
         throwError(ctx, "diff: " & e.msg, exception)
         nil
 
-    module.registerFn unified:
+    module.registerFn unified(a: string, b: string,
+        optsObj ?: JSObjectRef):
       ## diff.unified(a, b[, {context}]) -> unified diff text
-      if not checkArity(argumentCount, 2, 3, "unified", ctx, exception):
-        return nil
-      var a, b: string
-      if not strArg(ctx, args, 0, "unified", exception, a):
-        return nil
-      if not strArg(ctx, args, 1, "unified", exception, b):
-        return nil
       var opts: DiffOptions
-      if int(argumentCount) == 3:
-        var optsObj: JSValueRef
-        if not objArg(ctx, args, 2, "unified", exception, optsObj):
-          return nil
-        if not readOpts(ctx, optsObj, "unified", exception, opts):
+      if optsObj != nil:
+        if not readOpts(ctx, optsObj, "unified", exception, opts, docBlock):
           return nil
       else:
         opts = DiffOptions()

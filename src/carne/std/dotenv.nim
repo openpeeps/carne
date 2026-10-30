@@ -17,13 +17,8 @@ import ../bridge
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## dotenv.parse(text) -> object (with variable expansion applied)
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         # Same expansion loadDotenv applies, collected into an object
         # instead of the process environment.
@@ -41,17 +36,9 @@ init proc(module: Module) =
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
-    module.registerFn load:
+    module.registerFn load(path: default(string, ".env"),
+        override ?: bool):
       ## dotenv.load([path][, override]) -> undefined (writes into process env)
-      if not checkArity(argumentCount, 0, 2, "load", ctx, exception):
-        return nil
-      let n = int(argumentCount)
-      var path = ".env"
-      if n >= 1 and not strArg(ctx, args, 0, "load", exception, path):
-        return nil
-      var override = false
-      if n >= 2 and not boolArg(ctx, args, 1, "load", exception, override):
-        return nil
       try:
         loadDotenv(path, override)
       except CatchableError as e:

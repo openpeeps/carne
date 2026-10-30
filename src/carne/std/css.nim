@@ -167,13 +167,8 @@ proc getCssData(): CssData =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## css.parse(text) -> {rules: [...]}
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         let sheet = parseCss(text)
         var rules = newJArray()
@@ -184,13 +179,8 @@ init proc(module: Module) =
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
-    module.registerFn validate:
+    module.registerFn validate(text: string):
       ## css.validate(text) -> problems per declaration ([] when clean)
-      if not checkArity(argumentCount, 1, 1, "validate", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "validate", exception, text):
-        return nil
       try:
         let data = getCssData()
         var arr = newJArray()

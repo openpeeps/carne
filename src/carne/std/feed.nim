@@ -138,26 +138,16 @@ proc atomToJson(f: AtomFeed): JsonNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parseRss:
+    module.registerFn parseRss(text: string):
       ## feed.parseRss(text) -> feed object with items[]
-      if not checkArity(argumentCount, 1, 1, "parseRss", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parseRss", exception, text):
-        return nil
       try:
         returnJson(ctx, rssToJson(parseRss(text)), "parseRss", exception)
       except CatchableError as e:
         throwError(ctx, "parseRss: " & e.msg, exception)
         nil
 
-    module.registerFn parseAtom:
+    module.registerFn parseAtom(text: string):
       ## feed.parseAtom(text) -> feed object with entries[]
-      if not checkArity(argumentCount, 1, 1, "parseAtom", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parseAtom", exception, text):
-        return nil
       try:
         returnJson(ctx, atomToJson(parseAtom(text)), "parseAtom", exception)
       except CatchableError as e:

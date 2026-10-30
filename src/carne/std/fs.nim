@@ -18,13 +18,8 @@ import ../bridge
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn readFile:
+    module.registerFn readFile(path: string):
       ## fs.readFile(path) -> string (throws on IOError)
-      if not checkArity(argumentCount, 1, 1, "readFile", ctx, exception):
-        return nil
-      var path: string
-      if not strArg(ctx, args, 0, "readFile", exception, path):
-        return nil
       try:
         toJS(ctx, readFile(path))
       except IOError as e:
@@ -34,15 +29,8 @@ init proc(module: Module) =
         throwError(ctx, "readFile: " & e.msg, exception)
         nil
 
-    module.registerFn writeFile:
+    module.registerFn writeFile(path: string, data: string):
       ## fs.writeFile(path, data) -> undefined
-      if not checkArity(argumentCount, 2, 2, "writeFile", ctx, exception):
-        return nil
-      var path, data: string
-      if not strArg(ctx, args, 0, "writeFile", exception, path):
-        return nil
-      if not strArg(ctx, args, 1, "writeFile", exception, data):
-        return nil
       try:
         writeFile(path, data)
       except IOError as e:
@@ -53,22 +41,12 @@ init proc(module: Module) =
         return nil
       JSValueMakeUndefined(ctx)
 
-    module.registerFn exists:
+    module.registerFn exists(path: string):
       ## fs.exists(path) -> bool (files and dirs)
-      if not checkArity(argumentCount, 1, 1, "exists", ctx, exception):
-        return nil
-      var path: string
-      if not strArg(ctx, args, 0, "exists", exception, path):
-        return nil
       toJS(ctx, fileExists(path) or dirExists(path))
 
-    module.registerFn readDir:
+    module.registerFn readDir(path: string):
       ## fs.readDir(path) -> string[] (entry names)
-      if not checkArity(argumentCount, 1, 1, "readDir", ctx, exception):
-        return nil
-      var path: string
-      if not strArg(ctx, args, 0, "readDir", exception, path):
-        return nil
       var names: seq[string] = @[]
       try:
         for kind, entry in walkDir(path):
@@ -91,13 +69,8 @@ init proc(module: Module) =
         return nil
       arr
 
-    module.registerFn mkdir:
+    module.registerFn mkdir(path: string):
       ## fs.mkdir(path) -> undefined
-      if not checkArity(argumentCount, 1, 1, "mkdir", ctx, exception):
-        return nil
-      var path: string
-      if not strArg(ctx, args, 0, "mkdir", exception, path):
-        return nil
       try:
         createDir(path)
       except OSError as e:
@@ -105,13 +78,8 @@ init proc(module: Module) =
         return nil
       JSValueMakeUndefined(ctx)
 
-    module.registerFn remove:
+    module.registerFn remove(path: string):
       ## fs.remove(path) -> undefined (files only)
-      if not checkArity(argumentCount, 1, 1, "remove", ctx, exception):
-        return nil
-      var path: string
-      if not strArg(ctx, args, 0, "remove", exception, path):
-        return nil
       try:
         removeFile(path)
       except OSError as e:

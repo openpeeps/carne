@@ -66,13 +66,8 @@ proc jsonToXml(j: JsonNode): XmlNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## xml.parse(text) -> {tag, attrs, children}
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         let node = fromXml(text)
         if node == nil or node.kind != xnElement:
@@ -83,12 +78,10 @@ init proc(module: Module) =
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
-    module.registerFn stringify:
+    module.registerFn stringify(value: JSValueRef):
       ## xml.stringify(node) -> string
-      if not checkArity(argumentCount, 1, 1, "stringify", ctx, exception):
-        return nil
       var err = ""
-      let node = jsToJson(ctx, args[0], err)
+      let node = jsToJson(ctx, value, err)
       if node == nil:
         throwError(ctx, "stringify: " & err, exception)
         return nil

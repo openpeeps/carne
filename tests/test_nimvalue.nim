@@ -139,7 +139,7 @@ test "colors rejects mistyped args with type errors":
     discard runCode("require('std/colors').parse(42)")
     fail()
   except CarneError as e:
-    check "expected string" in e.msg
+    check "expected `string`" in e.msg
   try:
     discard runCode("require('std/colors').toHex(42)")
     fail()
@@ -151,33 +151,33 @@ test "sql rejects non-strings with a type error":
     discard runCode("require('std/sql').sqlite.parse(42)")
     fail()
   except CarneError as e:
-    check "expected string" in e.msg
+    check "expected `string`" in e.msg
 
 test "setTimeout with a non-function throws instead of crashing":
   try:
     discard runCode("setTimeout(42, 10)")
     fail()
   except CarneError as e:
-    check "not a function" in e.msg
+    check "expected `function`" in e.msg
 
 test "serve with a non-function handler throws instead of crashing":
   try:
     discard runCode("require('std/http').serve(18301, 42)")
     fail()
   except CarneError as e:
-    check "not a function" in e.msg
+    check "expected `function`" in e.msg
 
 test "strict scalars reject mistyped args":
   try:
     discard runCode("require('std/env').getenv(42)")
     fail()
   except CarneError as e:
-    check "expected string" in e.msg
+    check "expected `string`" in e.msg
   try:
     discard runCode("require('std/env').exit('x')")
     fail()
   except CarneError as e:
-    check "expected number" in e.msg
+    check "expected `number`" in e.msg
 
 test "options readers ignore extra keys and undefined":
   check runCode(
@@ -194,7 +194,36 @@ test "options bags reject arrays":
     discard runCode("require('std/diff').diff('a', 'b', [3])")
     fail()
   except CarneError as e:
-    check "expected object" in e.msg
+    check "expected `object`" in e.msg
+
+test "type mismatch carries the JSDoc block first":
+  try:
+    discard runCode("require('std/env').getenv(42)")
+    fail()
+  except CarneError as e:
+    check "/*\n * env.getenv(\"HOME\") -> string | undefined\n */" in e.msg
+    check "type mismatch parameter: `key`. Got `number`," &
+      " expected `string`" in e.msg
+    check e.msg.find("/*") < e.msg.find("type mismatch")
+
+test "arity errors carry the JSDoc block after the message":
+  try:
+    discard runCode("require('std/env').getenv()")
+    fail()
+  except CarneError as e:
+    check "getenv: expected 1 argument(s), got 0" in e.msg
+    check "/*\n * env.getenv(\"HOME\") -> string | undefined\n */" in e.msg
+    check e.msg.find("got 0") < e.msg.find("/*")
+
+test "optional params keep their defaults":
+  check runCode(
+    "const c = require('std/colors');" &
+    "const a = c.parse('red'); const b = c.parse('blue');" &
+    "JSON.stringify(c.mix(a, b))") ==
+    runCode(
+    "const c = require('std/colors');" &
+    "const a = c.parse('red'); const b = c.parse('blue');" &
+    "JSON.stringify(c.mix(a, b, 50))")
 
 test "fromJS rejects oversized arrays":
   block:

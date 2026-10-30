@@ -37,16 +37,14 @@ proc numField(v: NimValue; field, name: string): float =
   else:
     raise newException(CatchableError, "color needs numeric \"" & field & "\"")
 
-proc colorArg(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
-    i: int; name: string; exception: ptr JSValueRef;
-    color: var Color): bool =
-  ## Reads arg i as a {r, g, b, a?} object. False + JS throw on failure.
-  var v: NimValue
-  if not nimArg(ctx, args, i, name, exception, v):
-    return false
+proc colorVal(v: NimValue; name, docBlock: string; ctx: JSContextRef;
+    exception: ptr JSValueRef; color: var Color): bool =
+  ## Reads a snapshot as a {r, g, b, a?} object. False + JS throw.
+  template oerr(msg: string): untyped =
+    throwError(ctx,
+      (if docBlock.len > 0: docBlock & "\n" else: "") & msg, exception)
   if v.kind != nvkObject:
-    throwError(ctx, name & ": color must be an {r, g, b, a?} object",
-      exception)
+    oerr(name & ": color must be an {r, g, b, a?} object")
     return false
   try:
     var c = Color(a: 1.0)
@@ -57,66 +55,38 @@ proc colorArg(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
       c.a = numField(v, "a", name)
     if c.r < 0.0 or c.r > 1.0 or c.g < 0.0 or c.g > 1.0 or
         c.b < 0.0 or c.b > 1.0 or c.a < 0.0 or c.a > 1.0:
-      throwError(ctx, name & ": r/g/b must be 0..255 and a 0..1", exception)
+      oerr(name & ": r/g/b must be 0..255 and a 0..1")
       return false
     color = c
     true
   except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg, exception)
-    false
-
-proc amountArg(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
-    i: int; name: string; exception: ptr JSValueRef;
-    amount: var float): bool =
-  var v: NimValue
-  if not nimArg(ctx, args, i, name, exception, v):
-    return false
-  try:
-    amount = v.asFloat(name)
-    true
-  except CatchableError as e:
-    throwError(ctx, name & ": " & e.msg, exception)
+    oerr(name & ": " & e.msg)
     false
 
 ## Builds the std/colors namespace object.
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## colors.parse(text) -> {r, g, b, a}
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var v: NimValue
-      if not nimArg(ctx, args, 0, "parse", exception, v):
-        return nil
-      var text: string
-      try:
-        text = v.asString("parse")
-      except CatchableError as e:
-        throwError(ctx, e.msg, exception)
-        return nil
       try:
         returnJson(ctx, colorToJson(parseColor(text)), "parse", exception)
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
-    module.registerFn random:
+    module.registerFn random():
       ## colors.random() -> {r, g, b, a}
-      if not checkArity(argumentCount, 0, 0, "random", ctx, exception):
-        return nil
       try:
         returnJson(ctx, colorToJson(randomColor()), "random", exception)
       except CatchableError as e:
         throwError(ctx, "random: " & e.msg, exception)
         nil
 
-    module.registerFn toHex:
+    module.registerFn toHex(color: NimValue):
       ## colors.toHex(color) -> "#rrggbb"
-      if not checkArity(argumentCount, 1, 1, "toHex", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "toHex", exception, c):
+      if not colorVal(color, "toHex", docBlock, ctx, exception, c):
         return nil
       try:
         toJS(ctx, c.toHex())
@@ -124,12 +94,10 @@ init proc(module: Module) =
         throwError(ctx, "toHex: " & e.msg, exception)
         nil
 
-    module.registerFn toRgb:
+    module.registerFn toRgb(color: NimValue):
       ## colors.toRgb(color) -> "rgb(r, g, b)"
-      if not checkArity(argumentCount, 1, 1, "toRgb", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "toRgb", exception, c):
+      if not colorVal(color, "toRgb", docBlock, ctx, exception, c):
         return nil
       try:
         toJS(ctx, c.toRgbString())
@@ -137,12 +105,10 @@ init proc(module: Module) =
         throwError(ctx, "toRgb: " & e.msg, exception)
         nil
 
-    module.registerFn toHsl:
+    module.registerFn toHsl(color: NimValue):
       ## colors.toHsl(color) -> "hsl(h, s%, l%)"
-      if not checkArity(argumentCount, 1, 1, "toHsl", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "toHsl", exception, c):
+      if not colorVal(color, "toHsl", docBlock, ctx, exception, c):
         return nil
       try:
         toJS(ctx, c.toHslString())
@@ -150,12 +116,10 @@ init proc(module: Module) =
         throwError(ctx, "toHsl: " & e.msg, exception)
         nil
 
-    module.registerFn toName:
+    module.registerFn toName(color: NimValue):
       ## colors.toName(color) -> nearest named color
-      if not checkArity(argumentCount, 1, 1, "toName", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "toName", exception, c):
+      if not colorVal(color, "toName", docBlock, ctx, exception, c):
         return nil
       try:
         toJS(ctx, c.toName())
@@ -163,15 +127,10 @@ init proc(module: Module) =
         throwError(ctx, "toName: " & e.msg, exception)
         nil
 
-    module.registerFn lighten:
+    module.registerFn lighten(color: NimValue, amount: float):
       ## colors.lighten(color, amount) -> {r, g, b, a}
-      if not checkArity(argumentCount, 2, 2, "lighten", ctx, exception):
-        return nil
       var c: Color
-      var amount: float
-      if not colorArg(ctx, args, 0, "lighten", exception, c):
-        return nil
-      if not amountArg(ctx, args, 1, "lighten", exception, amount):
+      if not colorVal(color, "lighten", docBlock, ctx, exception, c):
         return nil
       try:
         returnJson(ctx, colorToJson(c.lighten(amount)), "lighten",
@@ -180,15 +139,10 @@ init proc(module: Module) =
         throwError(ctx, "lighten: " & e.msg, exception)
         nil
 
-    module.registerFn darken:
+    module.registerFn darken(color: NimValue, amount: float):
       ## colors.darken(color, amount) -> {r, g, b, a}
-      if not checkArity(argumentCount, 2, 2, "darken", ctx, exception):
-        return nil
       var c: Color
-      var amount: float
-      if not colorArg(ctx, args, 0, "darken", exception, c):
-        return nil
-      if not amountArg(ctx, args, 1, "darken", exception, amount):
+      if not colorVal(color, "darken", docBlock, ctx, exception, c):
         return nil
       try:
         returnJson(ctx, colorToJson(c.darken(amount)), "darken", exception)
@@ -196,15 +150,10 @@ init proc(module: Module) =
         throwError(ctx, "darken: " & e.msg, exception)
         nil
 
-    module.registerFn saturate:
+    module.registerFn saturate(color: NimValue, amount: float):
       ## colors.saturate(color, amount) -> {r, g, b, a}
-      if not checkArity(argumentCount, 2, 2, "saturate", ctx, exception):
-        return nil
       var c: Color
-      var amount: float
-      if not colorArg(ctx, args, 0, "saturate", exception, c):
-        return nil
-      if not amountArg(ctx, args, 1, "saturate", exception, amount):
+      if not colorVal(color, "saturate", docBlock, ctx, exception, c):
         return nil
       try:
         returnJson(ctx, colorToJson(c.saturate(amount)), "saturate",
@@ -213,15 +162,10 @@ init proc(module: Module) =
         throwError(ctx, "saturate: " & e.msg, exception)
         nil
 
-    module.registerFn spin:
+    module.registerFn spin(color: NimValue, amount: float):
       ## colors.spin(color, degrees) -> {r, g, b, a}
-      if not checkArity(argumentCount, 2, 2, "spin", ctx, exception):
-        return nil
       var c: Color
-      var amount: float
-      if not colorArg(ctx, args, 0, "spin", exception, c):
-        return nil
-      if not amountArg(ctx, args, 1, "spin", exception, amount):
+      if not colorVal(color, "spin", docBlock, ctx, exception, c):
         return nil
       try:
         returnJson(ctx, colorToJson(c.spin(amount)), "spin", exception)
@@ -229,12 +173,10 @@ init proc(module: Module) =
         throwError(ctx, "spin: " & e.msg, exception)
         nil
 
-    module.registerFn complement:
+    module.registerFn complement(color: NimValue):
       ## colors.complement(color) -> {r, g, b, a}
-      if not checkArity(argumentCount, 1, 1, "complement", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "complement", exception, c):
+      if not colorVal(color, "complement", docBlock, ctx, exception, c):
         return nil
       try:
         returnJson(ctx, colorToJson(c.complement()), "complement",
@@ -243,12 +185,10 @@ init proc(module: Module) =
         throwError(ctx, "complement: " & e.msg, exception)
         nil
 
-    module.registerFn greyscale:
+    module.registerFn greyscale(color: NimValue):
       ## colors.greyscale(color) -> {r, g, b, a}
-      if not checkArity(argumentCount, 1, 1, "greyscale", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "greyscale", exception, c):
+      if not colorVal(color, "greyscale", docBlock, ctx, exception, c):
         return nil
       try:
         returnJson(ctx, colorToJson(c.greyscale()), "greyscale", exception)
@@ -256,18 +196,13 @@ init proc(module: Module) =
         throwError(ctx, "greyscale: " & e.msg, exception)
         nil
 
-    module.registerFn mix:
+    module.registerFn mix(aVal: NimValue, bVal: NimValue,
+        weight: default(float, 50.0)):
       ## colors.mix(a, b[, weight]) -> {r, g, b, a} (weight 0..100, default 50)
-      if not checkArity(argumentCount, 2, 3, "mix", ctx, exception):
-        return nil
       var a, b: Color
-      if not colorArg(ctx, args, 0, "mix", exception, a):
+      if not colorVal(aVal, "mix", docBlock, ctx, exception, a):
         return nil
-      if not colorArg(ctx, args, 1, "mix", exception, b):
-        return nil
-      var weight = 50.0
-      if int(argumentCount) == 3 and
-          not amountArg(ctx, args, 2, "mix", exception, weight):
+      if not colorVal(bVal, "mix", docBlock, ctx, exception, b):
         return nil
       try:
         returnJson(ctx, colorToJson(mix(a, b, weight)), "mix", exception)
@@ -275,12 +210,10 @@ init proc(module: Module) =
         throwError(ctx, "mix: " & e.msg, exception)
         nil
 
-    module.registerFn triad:
+    module.registerFn triad(color: NimValue):
       ## colors.triad(color) -> [{r, g, b, a} x3]
-      if not checkArity(argumentCount, 1, 1, "triad", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "triad", exception, c):
+      if not colorVal(color, "triad", docBlock, ctx, exception, c):
         return nil
       try:
         var arr = newJArray()
@@ -291,15 +224,12 @@ init proc(module: Module) =
         throwError(ctx, "triad: " & e.msg, exception)
         nil
 
-    module.registerFn contrastRatio:
+    module.registerFn contrastRatio(aVal: NimValue, bVal: NimValue):
       ## colors.contrastRatio(a, b) -> 1..21
-      if not checkArity(argumentCount, 2, 2, "contrastRatio", ctx,
-          exception):
-        return nil
       var a, b: Color
-      if not colorArg(ctx, args, 0, "contrastRatio", exception, a):
+      if not colorVal(aVal, "contrastRatio", docBlock, ctx, exception, a):
         return nil
-      if not colorArg(ctx, args, 1, "contrastRatio", exception, b):
+      if not colorVal(bVal, "contrastRatio", docBlock, ctx, exception, b):
         return nil
       try:
         toJS(ctx, contrastRatio(a, b))
@@ -307,14 +237,12 @@ init proc(module: Module) =
         throwError(ctx, "contrastRatio: " & e.msg, exception)
         nil
 
-    module.registerFn isReadable:
+    module.registerFn isReadable(aVal: NimValue, bVal: NimValue):
       ## colors.isReadable(a, b) -> bool (WCAG AA, small text)
-      if not checkArity(argumentCount, 2, 2, "isReadable", ctx, exception):
-        return nil
       var a, b: Color
-      if not colorArg(ctx, args, 0, "isReadable", exception, a):
+      if not colorVal(aVal, "isReadable", docBlock, ctx, exception, a):
         return nil
-      if not colorArg(ctx, args, 1, "isReadable", exception, b):
+      if not colorVal(bVal, "isReadable", docBlock, ctx, exception, b):
         return nil
       try:
         toJS(ctx, isReadable(a, b))
@@ -322,12 +250,10 @@ init proc(module: Module) =
         throwError(ctx, "isReadable: " & e.msg, exception)
         nil
 
-    module.registerFn isLight:
+    module.registerFn isLight(color: NimValue):
       ## colors.isLight(color) -> bool
-      if not checkArity(argumentCount, 1, 1, "isLight", ctx, exception):
-        return nil
       var c: Color
-      if not colorArg(ctx, args, 0, "isLight", exception, c):
+      if not colorVal(color, "isLight", docBlock, ctx, exception, c):
         return nil
       try:
         toJS(ctx, isLight(c))

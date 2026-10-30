@@ -19,19 +19,11 @@ import ../bridge
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string, optsObj ?: JSObjectRef):
       ## csv.parse(text[, {headers, delimiter, quote}]) -> array
-      if not checkArity(argumentCount, 1, 2, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       var headers = false
       var opts = defaultCsvOptions()
-      if int(argumentCount) >= 2:
-        var optsObj: JSValueRef
-        if not objArg(ctx, args, 1, "parse", exception, optsObj):
-          return nil
+      if optsObj != nil:
         var err = ""
         let h = getField(ctx, optsObj, "headers", err)
         if err != "":

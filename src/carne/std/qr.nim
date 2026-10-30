@@ -50,18 +50,10 @@ proc ecLevelArg(ctx: JSContextRef; obj: JSValueRef;
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn encode:
+    module.registerFn encode(text: string, optsObj ?: JSObjectRef):
       ## qr.encode(text[, {ecLevel}]) -> {size, svg, terminal}
-      if not checkArity(argumentCount, 1, 2, "encode", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "encode", exception, text):
-        return nil
       var level = ecMedium
-      if int(argumentCount) == 2:
-        var optsObj: JSValueRef
-        if not objArg(ctx, args, 1, "encode", exception, optsObj):
-          return nil
+      if optsObj != nil:
         try:
           level = ecLevelArg(ctx, optsObj, "encode")
         except CatchableError as e:

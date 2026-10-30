@@ -178,13 +178,8 @@ proc cardToJson(c: VCard): JsonNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn parse:
+    module.registerFn parse(text: string):
       ## vcard.parse(text) -> contact[] (one object per VCARD)
-      if not checkArity(argumentCount, 1, 1, "parse", ctx, exception):
-        return nil
-      var text: string
-      if not strArg(ctx, args, 0, "parse", exception, text):
-        return nil
       try:
         let arr = newJArray()
         for c in parseVCards(text):

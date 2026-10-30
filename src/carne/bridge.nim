@@ -6,6 +6,7 @@
 
 import std/macros
 import std/math
+import std/strutils
 import std/tables
 
 import pkg/openparser/json
@@ -150,6 +151,69 @@ proc checkArity*(argumentCount: csize_t; wantMin, wantMax: int;
     throwError(ctx, msg, exception)
     return false
   true
+
+proc checkArityMin*(argumentCount: csize_t; wantMin: int;
+    name: string; ctx: JSContextRef;
+    exception: ptr JSValueRef; usage: string = ""): bool =
+  ## Lower-bound-only arity check for variadic tails (see RestArgs).
+  ## Same message shape as checkArity ("expected at least N").
+  let n = int(argumentCount)
+  if n < wantMin:
+    var msg = name & ": expected at least " & $wantMin &
+      " argument(s), got " & $n
+    if usage.len > 0:
+      msg &= "\n" & usage
+    throwError(ctx, msg, exception)
+    return false
+  true
+
+type
+  JsArgKind* = enum
+    ## Declared `registerFn` parameter kinds. The macro maps the written
+    ## type name to one of these at compile time; anything else is a
+    ## build error. Valid type names: string, int, int64, float, bool,
+    ## NimValue, JSObjectRef, JSValueRef, RestArgs.
+    jakString    ## string: strict JS string
+    jakInt       ## int/int64: integral number (integral floats accepted)
+    jakFloat     ## float: any number, ints widen
+    jakBool      ## bool: strict boolean
+    jakNimValue  ## NimValue: eager snapshot of anything
+    jakObject    ## JSObjectRef: live object ref, arrays rejected
+    jakRaw       ## JSValueRef: live ref, unchecked (overload dispatch,
+                 ## JS coercion passthrough)
+    jakRest      ## RestArgs: remaining raw refs (variadic tail, last only)
+
+  RestArgs* = seq[JSValueRef]
+    ## Declared type of a variadic tail parameter.
+
+proc jsDocBlock*(doc: string): string =
+  ## Renders leading `##` doc lines as a JSDoc block for error output,
+  ## "" when there is no doc. Thrown type errors carry this first so
+  ## the CLI prints full context.
+  if doc.strip().len == 0:
+    return ""
+  result = "/*"
+  for line in doc.splitLines():
+    let t = line.strip()
+    if t.len == 0:
+      result &= "\n *"
+    else:
+      result &= "\n * " & t
+  result &= "\n */"
+
+proc throwTypeMismatch*(ctx: JSContextRef; fname, pname, actual, want,
+    docBlock: string; exception: ptr JSValueRef) =
+  ## Throws `type mismatch parameter: ...` with the JSDoc block first
+  ## (user format). Without docs the function name prefixes instead so
+  ## the error still names its owner.
+  var msg = ""
+  if docBlock.len > 0:
+    msg = docBlock & "\n"
+  else:
+    msg = fname & ": "
+  msg &= "type mismatch parameter: `" & pname & "`. Got `" & actual &
+    "`, expected `" & want & "`"
+  throwError(ctx, msg, exception)
 
 proc jsonToJS*(ctx: JSContextRef; node: JsonNode): JSValueRef =
   ## Parses $node as JSON into a fresh JS value. nil on failure
@@ -414,15 +478,18 @@ proc toJS*(ctx: JSContextRef; v: NimValue): JSValueRef =
 
 proc nimArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     i: int; name: string; exception: ptr JSValueRef;
-    val: var NimValue): bool =
+    val: var NimValue; prefix = ""): bool =
   ## Reads arg i as a NimValue snapshot. False + JS throw on failure.
+  ## `prefix` (the JSDoc block + newline, emitted by the macro) goes
+  ## first so the CLI prints full context.
   var err = ""
   if args[i] == nil:
     err = "is missing"
   else:
     val = fromJS(ctx, args[i], err)
   if err != "":
-    throwError(ctx, name & ": argument " & $i & " " & err, exception)
+    throwError(ctx, prefix & name & ": argument " & $i & " " & err,
+      exception)
     return false
   true
 
@@ -442,6 +509,18 @@ proc jsKindName*(ctx: JSContextRef; v: JSValueRef): string =
     if JSValueIsArray(ctx, v): "array"
     elif JSObjectIsFunction(ctx, v): "function"
     else: "object"
+
+proc objRefCheck*(ctx: JSContextRef; v: JSValueRef; fname, pname,
+    docBlock: string; exception: ptr JSValueRef): bool =
+  ## Object check on a live ref for macro-generated `JSObjectRef`
+  ## params (arrays rejected, like objArg). False + JS throw with the
+  ## JSDoc-first mismatch on failure.
+  if v == nil or JSValueGetType(ctx, v) != kJSTypeObject or
+      JSValueIsArray(ctx, v):
+    throwTypeMismatch(ctx, fname, pname, jsKindName(ctx, v), "object",
+      docBlock, exception)
+    return false
+  true
 
 proc objArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     i: int; name: string; exception: ptr JSValueRef;
@@ -706,6 +785,58 @@ proc boolArg*(ctx: JSContextRef; args: ptr UncheckedArray[JSValueRef];
     throwError(ctx, e.msg, exception)
     false
 
+proc stringParam*(ctx: JSContextRef; v: NimValue; fname, pname,
+    docBlock: string; exception: ptr JSValueRef;
+    val: var string): bool =
+  ## Strict string check on a snapshot, throwing the JSDoc-first type
+  ## mismatch on failure. Emitted by the macro for `name: string`.
+  try:
+    val = v.asString(fname)
+    true
+  except CatchableError:
+    throwTypeMismatch(ctx, fname, pname, jsTypeName(v.kind), "string",
+      docBlock, exception)
+    false
+
+proc intParam*(ctx: JSContextRef; v: NimValue; fname, pname,
+    docBlock: string; exception: ptr JSValueRef;
+    val: var int64): bool =
+  ## Integral-number check on a snapshot (integral floats accepted,
+  ## mirroring asInt). Emitted by the macro for `name: int`.
+  try:
+    val = v.asInt(fname)
+    true
+  except CatchableError:
+    throwTypeMismatch(ctx, fname, pname, jsTypeName(v.kind), "integer",
+      docBlock, exception)
+    false
+
+proc floatParam*(ctx: JSContextRef; v: NimValue; fname, pname,
+    docBlock: string; exception: ptr JSValueRef;
+    val: var float): bool =
+  ## Number check on a snapshot (ints widen). Emitted by the macro
+  ## for `name: float`.
+  try:
+    val = v.asFloat(fname)
+    true
+  except CatchableError:
+    throwTypeMismatch(ctx, fname, pname, jsTypeName(v.kind), "number",
+      docBlock, exception)
+    false
+
+proc boolParam*(ctx: JSContextRef; v: NimValue; fname, pname,
+    docBlock: string; exception: ptr JSValueRef;
+    val: var bool): bool =
+  ## Strict boolean check on a snapshot. Emitted by the macro for
+  ## `name: bool`.
+  try:
+    val = v.asBool(fname)
+    true
+  except CatchableError:
+    throwTypeMismatch(ctx, fname, pname, jsTypeName(v.kind), "boolean",
+      docBlock, exception)
+    false
+
 template exportObject*(body: untyped): untyped =
   ## Marker for member declarations inside `init`. Only `init`
   ## understands it; direct expansion is a compile error.
@@ -772,15 +903,19 @@ proc substModule(n: NimNode; mname: string; moduleSym: NimNode): NimNode =
       result.add(substModule(child, mname, moduleSym))
 
 proc addErrorContext(n: NimNode; doc: string): NimNode =
-  ## Appends the member doc to every `throwError` message and passes it
-  ## as `usage` to `checkArity` calls. Same traversal rules as substBody.
+  ## Appends the member doc (rendered as a JSDoc block) to every
+  ## `throwError` message and passes it as `usage` to `checkArity`
+  ## calls. Same traversal rules as substBody.
+  let blockStr = jsDocBlock(doc)
+  if blockStr.len == 0:
+    return copy(n)
   if n.kind == nnkCall and n.len >= 4 and n[0].kind == nnkIdent and
       n[0].strVal == "throwError":
     result = copyNimNode(n)
     result.add(copy(n[0]))
     result.add(copy(n[1]))
     result.add(nnkInfix.newTree(newIdentNode("&"), copy(n[2]),
-      newStrLitNode("\n" & doc)))
+      newStrLitNode("\n" & blockStr)))
     for i in 3 ..< n.len:
       result.add(copy(n[i]))
     return
@@ -789,7 +924,7 @@ proc addErrorContext(n: NimNode; doc: string): NimNode =
     result = copyNimNode(n)
     for child in n:
       result.add(copy(child))
-    result.add(newStrLitNode(doc))
+    result.add(newStrLitNode(blockStr))
     return
   if n.kind in routineKinds:
     return copy(n)
@@ -801,13 +936,186 @@ proc addErrorContext(n: NimNode; doc: string): NimNode =
     else:
       result.add(addErrorContext(child, doc))
 
+type
+  ParamSpec = tuple[name: string, kind: JsArgKind, hasDefault: bool,
+    default: NimNode]
+    ## One declared `registerFn` parameter, parsed at compile time.
+
+const reservedParamNames = ["ctx", "function", "thisObject",
+  "argumentCount", "arguments", "exception", "args", "docBlock"]
+
+proc jsArgKindFromIdent(t: NimNode; fname, pname: string): JsArgKind =
+  ## Maps a written type name to its kind. Anything else is a build
+  ## error listing what is valid.
+  if t.kind != nnkIdent:
+    error("registerFn " & fname & ": parameter `" & pname &
+      "` needs a plain type name", t)
+  case t.strVal
+  of "string": result = jakString
+  of "int", "int64": result = jakInt
+  of "float": result = jakFloat
+  of "bool": result = jakBool
+  of "NimValue": result = jakNimValue
+  of "JSObjectRef": result = jakObject
+  of "JSValueRef": result = jakRaw
+  of "RestArgs": result = jakRest
+  else:
+    error("registerFn " & fname & ": unknown arg type '" & t.strVal &
+      "' for `" & pname & "` (use string, int, float, bool, NimValue," &
+      " JSObjectRef, JSValueRef or RestArgs)", t)
+
+proc defaultExprFor(kind: JsArgKind): NimNode =
+  ## Zero default for an optional parameter.
+  case kind
+  of jakString: result = newStrLitNode("")
+  of jakInt:
+    result = newNimNode(nnkInt64Lit)
+    result.intVal = 0
+  of jakFloat: result = newFloatLitNode(0.0)
+  of jakBool: result = newIdentNode("false")
+  of jakNimValue:
+    result = nnkObjConstr.newTree(newIdentNode("NimValue"),
+      nnkExprColonExpr.newTree(newIdentNode("kind"),
+        newIdentNode("nvkUndefined")))
+  of jakObject, jakRaw: result = newNilLit()
+  of jakRest:
+    result = nnkPrefix.newTree(newIdentNode("@"),
+      newNimNode(nnkBracket))
+
+proc paramVarType(kind: JsArgKind): NimNode =
+  ## Declared Nim type of a generated parameter binding.
+  case kind
+  of jakString: newIdentNode("string")
+  of jakInt: newIdentNode("int64")
+  of jakFloat: newIdentNode("float")
+  of jakBool: newIdentNode("bool")
+  of jakNimValue: newIdentNode("NimValue")
+  of jakObject, jakRaw: newIdentNode("JSValueRef")
+  of jakRest: newIdentNode("RestArgs")
+
+proc paramName(n: NimNode; fname: string): string =
+  if n.kind != nnkIdent:
+    error("registerFn " & fname & ": parameter name must be an " &
+      "identifier", n)
+  if n.strVal in reservedParamNames:
+    error("registerFn " & fname & ": `" & n.strVal & "` is reserved" &
+      " (callback binding)", n)
+  n.strVal
+
+proc parseOneParam(p: NimNode; fname: string): ParamSpec =
+  ## One header entry: `name: Type` (required), `name?: Type`
+  ## (optional, zero default) or `name: default(Type, value)`
+  ## (optional, explicit default).
+  if p.kind == nnkExprColonExpr and p.len >= 2:
+    let nm = paramName(p[0], fname)
+    if p[1].kind == nnkCall and p[1].len == 3 and
+        p[1][0].kind == nnkIdent and p[1][0].strVal == "default":
+      let k = jsArgKindFromIdent(p[1][1], fname, nm)
+      if k == jakRest:
+        error("registerFn " & fname & ": RestArgs takes no default", p)
+      return (nm, k, true, copy(p[1][2]))
+    return (nm, jsArgKindFromIdent(p[1], fname, nm), false, newNilLit())
+  if p.kind == nnkInfix and p.len >= 3 and p[0].kind == nnkIdent and
+      p[0].strVal == "?:" and p[1].kind == nnkIdent:
+    let nm = paramName(p[1], fname)
+    let k = jsArgKindFromIdent(p[2], fname, nm)
+    if k == jakRest:
+      error("registerFn " & fname & ": RestArgs is bare and last" &
+        " (no `?` needed)", p)
+    return (nm, k, true, defaultExprFor(k))
+  error("registerFn " & fname & ": write each parameter as `name: Type`," &
+    " `name?: Type` or `name: default(Type, value)`", p)
+
+proc parseHeader(header: NimNode; what: string): tuple[fname: string,
+    params: seq[ParamSpec]] =
+  ## Normalizes a `registerFn` header. The command-position header
+  ## parses as ObjConstr (colon-first params) or Call (`?`-first or
+  ## `()` params); both carry the same entries. A bare name is a
+  ## build error pointing at the typed form.
+  if header.kind == nnkIdent:
+    error(what & " expects declared arg types, e.g. `" & header.strVal &
+      "(text: string)` (`" & header.strVal & "()` for zero args)", header)
+  if header.kind in {nnkObjConstr, nnkCall} and header.len >= 1 and
+      header[0].kind == nnkIdent:
+    let fname = header[0].strVal
+    var ps: seq[ParamSpec] = @[]
+    for i in 1 ..< header.len:
+      if header[i].kind == nnkEmpty:
+        continue
+      ps.add(parseOneParam(header[i], fname))
+    var seenOptional = false
+    var seenRest = false
+    for p in ps:
+      if p.kind == jakRest:
+        if seenRest:
+          error(what & " " & fname & ": only one RestArgs tail", header)
+        seenRest = true
+      elif p.hasDefault:
+        seenOptional = true
+      elif seenOptional:
+        error(what & " " & fname & ": required `" & p.name &
+          "` follows an optional parameter", header)
+    if seenRest and ps[^1].kind != jakRest:
+      error(what & " " & fname & ": RestArgs must be last", header)
+    return (fname, ps)
+  error(what & " expects `name(param: Type, ...)`", header)
+
+proc guardNot(call: NimNode): NimNode =
+  ## `if not <call>: return nil`.
+  let retNil = newNimNode(nnkReturnStmt)
+  retNil.add(newNilLit())
+  nnkIfStmt.newTree(nnkElifBranch.newTree(
+    nnkPrefix.newTree(newIdentNode("not"), call),
+    newStmtList(retNil)))
+
+proc emitSnapshot(body: NimNode; b: FnBindings; fname: string;
+    idx: int; prefix: string; tmp: NimNode) =
+  ## `var tmp: NimValue` + guarded `nimArg` snapshot.
+  var sec = newNimNode(nnkVarSection)
+  sec.add(newIdentDefs(tmp, newIdentNode("NimValue"), newEmptyNode()))
+  body.add(sec)
+  body.add(guardNot(newCall("nimArg", b.ctxSym, b.argsSym,
+    newLit(idx), newStrLitNode(fname), b.exSym, tmp,
+    newStrLitNode(prefix))))
+
+proc checkedHelperFor(kind: JsArgKind): string =
+  case kind
+  of jakString: "stringParam"
+  of jakInt: "intParam"
+  of jakFloat: "floatParam"
+  of jakBool: "boolParam"
+  else: "stringParam"
+
+proc emitCheckedAssign(body: NimNode; b: FnBindings; spec: ParamSpec;
+    fname: string; idx: int; docBlock, prefix: string) =
+  ## Snapshot + kind check assigning the visible binding. Used for
+  ## required params directly and for optional params inside the
+  ## presence guard.
+  let snap = genSym(nskVar, "snap")
+  emitSnapshot(body, b, fname, idx, prefix, snap)
+  body.add(guardNot(newCall(checkedHelperFor(spec.kind), b.ctxSym, snap,
+    newStrLitNode(fname), newStrLitNode(spec.name),
+    newStrLitNode(docBlock), b.exSym, newIdentNode(spec.name))))
+
+proc emitGuard(body: NimNode; b: FnBindings; idx: int;
+    inner: NimNode) =
+  ## `if int(argumentCount) >= idx+1: <inner>` for optional params.
+  body.add(nnkIfStmt.newTree(nnkElifBranch.newTree(
+    nnkInfix.newTree(newIdentNode(">="),
+      newCall("int", b.argcSym), newLit(idx + 1)),
+    inner)))
+
 proc buildCallbackFn*(fname: string; ctxName: string;
-    fnBody: NimNode): NimNode =
-  ## Builds the nested `cdecl` callback proc named `fname`. Leading
-  ## `##` doc comments in the body are collected and appended to the
-  ## proc's error messages (see addErrorContext):
+    fnBody: NimNode; params: seq[ParamSpec]): NimNode =
+  ## Builds the nested `cdecl` callback proc named `fname`. The header
+  ## params generate the arity check plus one reader each (see
+  ## parseHeader); the user body follows with the bindings in scope
+  ## plus `args`, `argumentCount` and `docBlock` (the rendered JSDoc).
+  ## Leading `##` doc comments in the body are collected for error
+  ## output: the JSDoc block prefixes type mismatches and is appended
+  ## to arity and `throwError` messages:
   ##
-  ##   module.registerFn readFile:
+  ##   module.registerFn readFile(path: string):
   ##     ## fs.readFile(path) -> string
   ##     ...
   let b = newBindings(ctxName)
@@ -820,6 +1128,18 @@ proc buildCallbackFn*(fname: string; ctxName: string;
           else: stmt.strVal
       else:
         break
+  let docBlock = jsDocBlock(doc)
+  let prefix = if docBlock.len > 0: docBlock & "\n" else: ""
+  var minArity = 0
+  var fixed = 0
+  var hasRest = false
+  for p in params:
+    if p.kind == jakRest:
+      hasRest = true
+    else:
+      inc fixed
+      if not p.hasDefault:
+        inc minArity
   let body = newStmtList()
   body.add(newLetStmt(b.argsSym,
     nnkCast.newTree(
@@ -827,6 +1147,97 @@ proc buildCallbackFn*(fname: string; ctxName: string;
         nnkBracketExpr.newTree(
           newIdentNode("UncheckedArray"), newIdentNode("JSValueRef"))),
       b.argvSym)))
+  body.add(newLetStmt(newIdentNode("docBlock"), newStrLitNode(docBlock)))
+  if hasRest:
+    body.add(guardNot(newCall("checkArityMin", b.argcSym, newLit(minArity),
+      newStrLitNode(fname), b.ctxSym, b.exSym,
+      newStrLitNode(docBlock))))
+  else:
+    body.add(guardNot(newCall("checkArity", b.argcSym, newLit(minArity),
+      newLit(fixed), newStrLitNode(fname), b.ctxSym, b.exSym,
+      newStrLitNode(docBlock))))
+  var idx = 0
+  for spec in params:
+    if spec.kind == jakRest:
+      let pname = newIdentNode(spec.name)
+      var sec = newNimNode(nnkVarSection)
+      sec.add(newIdentDefs(pname, newIdentNode("RestArgs"),
+        nnkPrefix.newTree(newIdentNode("@"),
+          newNimNode(nnkBracket))))
+      body.add(sec)
+      let loopVar = genSym(nskForVar, "k")
+      body.add(nnkForStmt.newTree(loopVar,
+        nnkInfix.newTree(newIdentNode("..<"), newLit(idx),
+          newCall("int", b.argcSym)),
+        newStmtList(newCall("add", pname,
+          nnkBracketExpr.newTree(b.argsSym, loopVar)))))
+    elif spec.kind == jakRaw:
+      var sec = newNimNode(nnkVarSection)
+      if spec.hasDefault:
+        sec.add(newIdentDefs(newIdentNode(spec.name),
+          newIdentNode("JSValueRef"), copy(spec.default)))
+      else:
+        sec.add(newIdentDefs(newIdentNode(spec.name),
+          newEmptyNode(),
+          nnkBracketExpr.newTree(b.argsSym, newLit(idx))))
+      body.add(sec)
+      if spec.hasDefault:
+        let assign = newStmtList(nnkAsgn.newTree(newIdentNode(spec.name),
+          nnkBracketExpr.newTree(b.argsSym, newLit(idx))))
+        body.add(nnkIfStmt.newTree(nnkElifBranch.newTree(
+          nnkInfix.newTree(newIdentNode(">="),
+            newCall("int", b.argcSym), newLit(idx + 1)),
+          assign)))
+    elif spec.kind == jakNimValue:
+      if spec.hasDefault:
+        var sec = newNimNode(nnkVarSection)
+        sec.add(newIdentDefs(newIdentNode(spec.name),
+          newIdentNode("NimValue"), copy(spec.default)))
+        body.add(sec)
+        let inner = newStmtList()
+        let snap = genSym(nskVar, "snap")
+        emitSnapshot(inner, b, fname, idx, prefix, snap)
+        inner.add(nnkAsgn.newTree(newIdentNode(spec.name), snap))
+        emitGuard(body, b, idx, inner)
+      else:
+        let snap = genSym(nskVar, "snap")
+        emitSnapshot(body, b, fname, idx, prefix, snap)
+        body.add(newLetStmt(newIdentNode(spec.name), snap))
+    elif spec.kind == jakObject:
+      var sec = newNimNode(nnkVarSection)
+      sec.add(newIdentDefs(newIdentNode(spec.name),
+        newIdentNode("JSValueRef"), newNilLit()))
+      body.add(sec)
+      let check = newStmtList()
+      check.add(guardNot(newCall("objRefCheck", b.ctxSym,
+        nnkBracketExpr.newTree(b.argsSym, newLit(idx)),
+        newStrLitNode(fname), newStrLitNode(spec.name),
+        newStrLitNode(docBlock), b.exSym)))
+      check.add(nnkAsgn.newTree(newIdentNode(spec.name),
+        nnkBracketExpr.newTree(b.argsSym, newLit(idx))))
+      if spec.hasDefault:
+        emitGuard(body, b, idx, check)
+      else:
+        for s in check:
+          body.add(s)
+    else:
+      # jakString/jakInt/jakFloat/jakBool via *Param helpers.
+      if spec.hasDefault:
+        var sec = newNimNode(nnkVarSection)
+        sec.add(newIdentDefs(newIdentNode(spec.name),
+          paramVarType(spec.kind), copy(spec.default)))
+        body.add(sec)
+        let inner = newStmtList()
+        emitCheckedAssign(inner, b, spec, fname, idx, docBlock, prefix)
+        emitGuard(body, b, idx, inner)
+      else:
+        var sec = newNimNode(nnkVarSection)
+        sec.add(newIdentDefs(newIdentNode(spec.name),
+          paramVarType(spec.kind), newEmptyNode()))
+        body.add(sec)
+        emitCheckedAssign(body, b, spec, fname, idx, docBlock, prefix)
+    if spec.kind != jakRest:
+      inc idx
   let subbed = substBody(fnBody, b)
   body.add(if doc.len > 0: addErrorContext(subbed, doc) else: subbed)
 
@@ -851,16 +1262,19 @@ proc buildCallbackFn*(fname: string; ctxName: string;
   result.add(newEmptyNode())
   result.add(body)
 
-macro registerFn*(ctx: untyped; ident: untyped; fnBody: untyped): untyped =
-  ## Defines a JSC callback named `ident` with the standard
-  ## `JSObjectCallAsFunctionCallback` shape. The body runs with `ctx`
-  ## (named after the passed context), `function`, `thisObject`,
-  ## `argumentCount`, `arguments`, `exception` and a pre-cast `args`
-  ## in scope:
+macro registerFn*(ctx: untyped; header: untyped;
+    fnBody: untyped): untyped =
+  ## Defines a JSC callback with the standard
+  ## `JSObjectCallAsFunctionCallback` shape. The header declares the
+  ## parameter types (see parseHeader); arity and type checks are
+  ## generated, so the body starts with the bindings in scope. The body
+  ## also sees `ctx` (named after the passed context), `function`,
+  ## `thisObject`, `argumentCount`, `arguments`, a pre-cast `args` and
+  ## `docBlock` (the rendered JSDoc):
   ##
-  ##   ctx.registerFn readFile:
-  ##     if not checkArity(argumentCount, 1, 1, "readFile", ctx, exception):
-  ##       return nil
+  ##   ctx.registerFn readFile(path: string):
+  ##     ## fs.readFile(path) -> string
+  ##     ...
   ##
   ## Definition only; registration stays explicit, as before:
   ##
@@ -872,7 +1286,8 @@ macro registerFn*(ctx: untyped; ident: untyped; fnBody: untyped): untyped =
   ## and body identifiers are substituted with gensyms. Nested routine
   ## definitions inside the body are left untouched.
   let ctxName = if ctx.kind == nnkIdent: ctx.strVal else: "ctx"
-  result = buildCallbackFn($ident, ctxName, fnBody)
+  let parsed = parseHeader(header, "registerFn")
+  result = buildCallbackFn(parsed.fname, ctxName, fnBody, parsed.params)
 
 proc dotCallTarget(n: NimNode; mname, field: string): bool =
   ## True when `n` is `mname.field(...)` / `mname.field ...`.
@@ -888,13 +1303,13 @@ macro init*(def: untyped): untyped =
   ##   init proc(module: Module) =
   ##     exportObject:
   ##       module.property greeting = "hi"
-  ##       module.registerFn readFile:
+  ##       module.registerFn readFile(path: string):
   ##         ...
   ##
   ## `module.registerFn` defines the callback and attaches it to the
   ## namespace; `module.property` attaches a data value (string, int,
   ## float, bool, JsonNode). A `##` doc comment on a member is collected
-  ## and appended to that member's error messages. Bare statements run
+  ## for error output (see buildCallbackFn). Bare statements run
   ## as init-time setup code. Member declarations outside `exportObject:`
   ## are an error, as is anything but members inside it.
   if def.kind != nnkLambda:
@@ -928,11 +1343,13 @@ macro init*(def: untyped): untyped =
         if member.kind == nnkCommentStmt:
           continue
         elif dotCallTarget(member, mname, "registerFn"):
-          if member.len != 3 or member[1].kind != nnkIdent or
-              member[2].kind != nnkStmtList:
-            error("registerFn expects a name and a body", member)
-          let fname = member[1].strVal
-          outStmts.add(buildCallbackFn(fname, "ctx", member[2]))
+          if member.len != 3 or member[2].kind != nnkStmtList:
+            error("registerFn expects a header with params and a body",
+              member)
+          let parsed = parseHeader(member[1], "registerFn")
+          let fname = parsed.fname
+          outStmts.add(buildCallbackFn(fname, "ctx", member[2],
+            parsed.params))
           outStmts.add(newCall("setProp", ctxId, copy(nsOf),
             newStrLitNode(fname),
             newCall("makeFunction", ctxId, newStrLitNode(fname),

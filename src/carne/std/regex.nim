@@ -70,30 +70,16 @@ proc matchToJson(text: string; m: MatchResult): JsonNode =
 init proc(module: Module) =
   exportObject:
 
-    module.registerFn test:
+    module.registerFn test(pattern: string, text: string):
       ## regex.test(pattern, text) -> bool (search semantics)
-      if not checkArity(argumentCount, 2, 2, "test", ctx, exception):
-        return nil
-      var pattern, text: string
-      if not strArg(ctx, args, 0, "test", exception, pattern):
-        return nil
-      if not strArg(ctx, args, 1, "test", exception, text):
-        return nil
       try:
         toJS(ctx, find(pattern, text).matched)
       except CatchableError as e:
         throwError(ctx, "test: " & e.msg, exception)
         nil
 
-    module.registerFn exec:
+    module.registerFn exec(pattern: string, text: string):
       ## regex.exec(pattern, text) -> {match, index, groups} | null
-      if not checkArity(argumentCount, 2, 2, "exec", ctx, exception):
-        return nil
-      var pattern, text: string
-      if not strArg(ctx, args, 0, "exec", exception, pattern):
-        return nil
-      if not strArg(ctx, args, 1, "exec", exception, text):
-        return nil
       try:
         let m = find(pattern, text)
         if not m.matched:
@@ -104,15 +90,8 @@ init proc(module: Module) =
         throwError(ctx, "exec: " & e.msg, exception)
         nil
 
-    module.registerFn matchAll:
+    module.registerFn matchAll(pattern: string, text: string):
       ## regex.matchAll(pattern, text) -> [{match, index, groups}]
-      if not checkArity(argumentCount, 2, 2, "matchAll", ctx, exception):
-        return nil
-      var pattern, text: string
-      if not strArg(ctx, args, 0, "matchAll", exception, pattern):
-        return nil
-      if not strArg(ctx, args, 1, "matchAll", exception, text):
-        return nil
       try:
         var arr = newJArray()
         for m in findAll(pattern, text):
