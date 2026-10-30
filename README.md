@@ -48,7 +48,7 @@ script that just runs, take Carne.
     `prune` orphans, `refresh` registry data
   - `develop <path>` for editable installs from a local directory
   - `package.json` manifests, npm-spec compliant; public registry
-    coming (see Roadmap)
+    at [openpeeps/carnepkgs](https://github.com/openpeeps/carnepkgs)
 - Written in Nim language
 - Open Source | `MIT` License
 
@@ -95,15 +95,13 @@ and npm-style sources:
 - The cloned repo must contain a valid `package.json` at its root;
   anything else is rejected, not installed.
 - `carne pkg install <name>[@range]`, `npm:name@range` aliases:
-  resolved through the package registry.
+  resolved through the package registry at
+  [openpeeps/carnepkgs](https://github.com/openpeeps/carnepkgs)
+  (source `carne`, cached at `~/.carne/registries/carne.json`;
+  `carne pkg refresh` re-downloads it).
 - `carne pkg develop [path]`: editable installs from a local directory
   (default: current dir).
 - `remove`, `update`, `list`, `prune`, `refresh` manage the store.
-
-> [!NOTE]
-> The public registry (`carne/pkgs`) is not set up yet, so installs by
-> bare package name currently 404. Until it exists, install from git
-> URLs or `develop` locally. See Roadmap.
 
 ### Package imports
 Installed packages load through `require("pkg/<name>")` as CommonJS:
@@ -503,7 +501,7 @@ fires too when given). `ws://` only in v1, no TLS yet.
 - [ ] `std/crypto`: X25519 exchange, RSA/ECDSA, AES-GCM
 - [ ] `std/gettext`: `.mo` support; `std/qr`: decode; `std/svg`: stringify
 - [ ] `exportClass` in the module DSL
-- [ ] Public package registry (`carne/pkgs`)
+- [x] Public package registry ([openpeeps/carnepkgs](https://github.com/openpeeps/carnepkgs))
 - [x] Beyond macOS (Linux via JavaScriptCoreGTK 4.1)
 
 

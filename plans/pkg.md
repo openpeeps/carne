@@ -7,7 +7,7 @@
   coerced, semver ranges via datpkgr `parseConstraint`, `npm:` aliases,
   git specs to `url`, `file:`/tarballs/compound ranges/dist-tags are
   manifest errors. `peerDependencies` carried, no solver.
-- Registry: placeholder `carne/pkgs` URL const; git URL + develop work now.
+- Registry: `openpeeps/carnepkgs` URL const (source `carne`); git URL + develop work now.
 - Scope: `carne pkg` CLI only; runtime `require("pkg/")` is Phase 2.
 
 ## Files
