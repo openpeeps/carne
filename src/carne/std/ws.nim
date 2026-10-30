@@ -81,19 +81,19 @@ type
     port: int
     host: string
 
-var wsConns: Table[pointer, ConnEntry]
-var wsServers: Table[pointer, ServerEntry]
-var wsTlsCtxs: Table[pointer, SslContext]
+var wsConns {.threadvar.}: Table[pointer, ConnEntry]
+var wsServers {.threadvar.}: Table[pointer, ServerEntry]
+var wsTlsCtxs {.threadvar.}: Table[pointer, SslContext]
   ## One shared client TLS context per run for wss:// connects, freed
   ## from the table by closeAllWs at teardown (the context itself is GC'd).
 
-var wsFireDepth = 0
+var wsFireDepth {.threadvar.}: int
   ## >0 while a user callback runs inside a powpow dispatcher. Destroying
   ## a server synchronously at that point crashes powpow's in-progress
   ## dispatch (its close frame path touches ws.conn after notifyClose
   ## returns); close(port) defers the server close to the next loop turn
   ## instead (see queueServerClose).
-var wsClosing: seq[WsServer] = @[]
+var wsClosing {.threadvar.}: seq[WsServer]
   ## Servers with deferred closes outstanding (see queueServerClose).
 
 proc decPending(rt: Runtime) =
@@ -825,6 +825,11 @@ init proc(module: Module) =
     module.registerFn serve(port: int64, hostOrHandlers: JSValueRef,
         handlers ?: JSObjectRef):
       ## ws.serve(port[, host], handlers) -> {port, host}
+      if inHttpWorker():
+        throwError(ctx,
+          "serve: ws.serve is not supported in http worker threads",
+          exception)
+        return nil
       if port < 1 or port > 65535:
         throwError(ctx, "serve: port must be 1..65535", exception)
         return nil

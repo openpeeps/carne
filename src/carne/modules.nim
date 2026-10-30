@@ -30,6 +30,14 @@ var pkgRequireHook*: PkgRequireHook = nil
 
 var onTeardown*: seq[proc()] = @[]
 
+# Threading contract: installers, pkgRequireHook and onTeardown are
+# written once at startup (binary top level, test top level, first
+# pkg require) before any worker thread spawns, and read-only after
+# that. Per-thread state lives in threadvar tables inside the std
+# modules plus the threadvar Runtime, so workers share nothing
+# mutable here. Each worker runs its own teardown pass over
+# onTeardown, closing its own servers via its own threadvar tables.
+
 proc registerStd*(name: string; installer: Installer) =
   ## Registers one stdlib implementation. Called once per module from
   ## std/all.nim (binary) or from individual tests.

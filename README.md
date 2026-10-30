@@ -511,8 +511,24 @@ them lowercase); handler-set response headers keep their case on the
 wire. HEAD requests and
 101/204/205/304 statuses answer with an empty body.
 `serve(port[, host][, opts], handler)` accepts
-`{keepAliveMs?, readTimeoutMs?, maxBodySize?}`. Client and server
-multiplex on one event loop with the timers, truly async, no threads.
+`{keepAliveMs?, readTimeoutMs?, maxBodySize?, workers?}`. Client and server
+multiplex on one event loop with the timers, truly async; `workers`
+(1..64, default 1) scales serving across threads instead. Above 1,
+each extra worker is a full runtime (own JS context, loop, server)
+re-running the script, sharing the port (a `SO_REUSEPORT` group on
+Linux, one adopted listen socket on macOS). JS heaps are isolated per
+worker: no shared state, and module-level side effects run once per
+worker. Gate driver code on `process.isWorker` (`false` on main,
+`true` on workers); `close(port)` stops every worker and process exit
+joins them. `ws.serve` is not supported in workers.
+
+```js
+const http = require("std/http");
+http.serve(3000, {workers: 4}, req => "hello world");
+if (!process.isWorker) {
+  setTimeout(() => http.close(3000), 1000); // driver: main only
+}
+```
 
 ### `std/ws`
 
@@ -586,6 +602,7 @@ console.log(uuid.isValid("nope"), uuid.isNil(uuid.NIL)); // false true
 - [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/mimetype`, `std/benchmark`, `std/qr`, `std/svg`
 - [x] `std/http` (async client + server, tuning opts, method helpers) + top-level promise unwrap in `runCode`
 - [x] `std/ws` (async + sync client, server, binary/ping/protocol, `wss://` client)
+- [x] `std/http` workers (cluster-style threads, `process.isWorker`)
 - [x] `std/uuid` (v1-v8 generation, parse/inspect, RFC namespace constants)
 - [x] Lazy startup (deferred event loop, per-run TLS, cached spec data)
 - [x] Benchmark suite + results
@@ -629,13 +646,15 @@ carne inherits JSC's tail-call support, like bun.
 Throughput bench (`bench/http-hello`, `bench/http-hello/run.sh` reproduces;
 wrk 4.2.0, `wrk -t4 -c100 -d10s` after a 2s warmup, port 3000, macOS,
 node v22.22.1, bun 1.4.4). Each server answers `200 text/plain
-"hello world"` to every request:
+"hello world"` to every request; `carne-workers` is the same server
+with `{workers: 4}` (`bench/http-hello/server.carne.workers.js`):
 
 | Runtime | Requests/sec | Avg latency | Max RSS |
 |---------|--------------|-------------|---------|
-| carne | 95242.01 | 1.05ms | 11.1 MB |
-| node | 41131.89 | 2.52ms | 61.5 MB |
-| bun | 86160.61 | 1.17ms | 31.1 MB |
+| carne | 95317.62 | 1.08ms | 11.0 MB |
+| carne-workers | 142424.24 | 694.97us | 28.0 MB |
+| node | 39661.32 | 2.61ms | 61.8 MB |
+| bun | 87750.13 | 1.14ms | 35.0 MB |
 
 Bodies are byte-identical (11 bytes); headers differ per runtime, so
 `Transfer/sec` is not directly comparable. Max RSS is sampled via

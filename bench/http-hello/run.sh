@@ -71,5 +71,6 @@ echo "| Runtime | Requests/sec | Avg latency | Max RSS |"
 echo "|---------|--------------|-------------|---------|"
 
 bench_one "carne" "$CARNE_BIN" run "$BENCH_DIR/server.carne.js"
+bench_one "carne-workers" "$CARNE_BIN" run "$BENCH_DIR/server.carne.workers.js"
 bench_one "node" node "$BENCH_DIR/server.node.js"
 bench_one "bun" bun "$BENCH_DIR/server.bun.js"

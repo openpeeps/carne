@@ -52,6 +52,10 @@ type
     promiseSettled*: bool
     promiseRejected*: bool
     promiseText*: string
+    source*: string
+    sourceURL*: string
+    baseDir*: string
+      ## Retained boot source so http workers can re-run the script.
 
 var rtThread {.threadvar.}: Runtime
 
@@ -61,6 +65,16 @@ proc currentRt*(): Runtime =
 
 proc setCurrentRt*(rt: Runtime) =
   rtThread = rt
+
+var isHttpWorker {.threadvar.}: bool
+  ## True on threads spawned by http.serve workers (never on main).
+  ## Gates spawn recursion, teardown joins and ws.serve.
+
+proc inHttpWorker*(): bool =
+  isHttpWorker
+
+proc markHttpWorker*() =
+  isHttpWorker = true
 
 proc ensureLoop*(rt: Runtime): Loop =
   ## Creates the run's powpow loop on first async need (timers, fetch,

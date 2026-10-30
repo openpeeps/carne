@@ -10,6 +10,8 @@ import std/tables
 import std/monotimes
 import std/times
 import std/os
+import std/atomics
+import std/locks
 
 import javascriptcore
 
@@ -20,6 +22,24 @@ import ./modules
 import ./std/timers
 
 export bridge
+
+var logLock: Lock
+var logLockState: Atomic[int]
+  ## Process-wide print lock (worker threads share stdout). Once-init
+  ## below: 0 uninit, 1 initing, 2 ready.
+
+proc lockLog*() =
+  if logLockState.load(moAcquire) != 2:
+    if logLockState.exchange(1, moAcquireRelease) == 0:
+      initLock(logLock)
+      logLockState.store(2, moRelease)
+    else:
+      while logLockState.load(moAcquire) != 2:
+        cpuRelax()
+  acquire(logLock)
+
+proc unlockLog*() =
+  release(logLock)
 
 registerFn(ctx, consoleLog(rest: RestArgs)):
   ## console.log(...): joins args with spaces on stdout.
@@ -34,7 +54,11 @@ registerFn(ctx, consoleLog(rest: RestArgs)):
     let text = $s
     JSStringRelease(s)
     parts.add(text)
-  echo parts.join(" ")
+  lockLog()
+  try:
+    stdout.writeLine(parts.join(" "))
+  finally:
+    unlockLog()
   JSValueMakeUndefined(ctx)
 
 proc topResolveImpl(ctx: JSContextRef; function, thisObject: JSObjectRef;
@@ -106,6 +130,11 @@ proc installProcess(ctx: JSContextRef; argv: seq[string];
       JSObjectMakeArray(ctx, 0, nil, addr ex)
   let processObj = newObject(ctx)
   setProp(ctx, processObj, "argv", arr, setupEx)
+  # Frozen per context at boot: workers (threads spawned by http.serve
+  # workers) install true, main installs false. Driver code gates on it
+  # (workers re-run the whole script, so fetch/close/test scaffolding
+  # must be main-only).
+  setProp(ctx, processObj, "isWorker", toJS(ctx, inHttpWorker()), setupEx)
   setProp(ctx, global, "process", processObj, setupEx)
 
 proc mark(prof: bool; pt: var MonoTime; phase: string) =
@@ -126,7 +155,8 @@ proc runCodeEx*(code: string; sourceURL = "script.js";
   let rt = Runtime(ctx: nil, argv: argv, loop: nil, pending: 0,
     exitRequested: false, exitCode: 0, uncaught: "",
     instances: initTable[string, JSObjectRef](), moduleStack: @[],
-    timerSeq: 0, timers: initTable[int, TimerEntry]())
+    timerSeq: 0, timers: initTable[int, TimerEntry](),
+    source: code, sourceURL: sourceURL, baseDir: baseDir)
   if baseDir.len > 0:
     rt.moduleStack.add(baseDir)
   withGlobalContext(ctx):

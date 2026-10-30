@@ -25,7 +25,18 @@
 # (fetch null-body-status semantics). The request object carries
 # {method, path, query, url, headers, body, clientIp}.
 # serve takes tuning opts: serve(port[, host][, opts], handler) with
-# opts = {keepAliveMs?, readTimeoutMs?, maxBodySize?}. The request
+# opts = {keepAliveMs?, readTimeoutMs?, maxBodySize?, workers?}.
+# workers (1..64, default 1) scales serving across worker threads: each
+# extra worker is a full runtime (own JS context in its own group, own
+# loop, own server) re-running the script source, so no JS value ever
+# crosses a thread (Node cluster model). Linux balances a SO_REUSEPORT
+# group (each worker listens); macOS adopts one shared listen socket
+# (it does not balance REUSEPORT groups). JS heaps stay isolated: no
+# shared state, module-level side effects run per worker. Driver code
+# gates on process.isWorker (false on main, true on workers).
+# close(port) stops every worker; process exit joins them. ws.serve
+# refuses inside workers (its listen would collide).
+# The request
 # object is lazy: fields convert on first access, so handlers that
 # ignore it pay ~nothing. Fields read during the handler stay valid;
 # fields first read after the handler returns answer "" ({} for
@@ -44,11 +55,16 @@ import powpow/types
 import powpow/proto/http
 import powpow/proto/httpclient
 import powpow/proto/httpserver
-from powpow/loop import stop
+from powpow/loop import stop, register
 from powpow/net/tls import SslContext, newClientTlsContext
+from powpow/net/common import setNonBlocking
+when not defined(windows):
+  import std/posix
 
 import ../bridge
 import ../modules
+when not defined(windows):
+  import ./httpworkers
 
 type
   FetchOpts = object
@@ -65,8 +81,10 @@ type
     port: int
     host: string
 
-var httpServers: Table[pointer, ServerEntry]
-var httpClients: Table[pointer, HttpClientBase]
+var httpServers {.threadvar.}: Table[pointer, ServerEntry]
+var httpClients {.threadvar.}: Table[pointer, HttpClientBase]
+  ## Per-worker tables: every worker thread runs its own runtime, loop
+  ## and server, so no request/connection state is ever shared.
 
 proc decPending(rt: Runtime) =
   dec rt.pending
@@ -213,14 +231,14 @@ type
     over: array[ReqField, JsonNode]
     haveOver: set[ReqField]
 
-var reqClass: JSClassRef = nil
-var reqStates: Table[pointer, ReqState]
+var reqClass {.threadvar.}: JSClassRef
+var reqStates {.threadvar.}: Table[pointer, ReqState]
   ## Roots ReqState while its JS object lives (removed in finalize).
   ## Same-thread assumption as the rest of the runtime: all JS and
   ## loop work happens on the run's single thread.
-var lastSrvKey: pointer = nil
-var lastSrv: ServerEntry
-var lastSrvValid = false
+var lastSrvKey {.threadvar.}: pointer
+var lastSrv {.threadvar.}: ServerEntry
+var lastSrvValid {.threadvar.}: bool
   ## One-entry fast path: benchmarks serve on a single server.
 
 proc snap(s: string): string =
@@ -583,9 +601,43 @@ proc closeServerEntry(srv: HttpServer; e: ServerEntry) =
   lastSrvValid = false
   decPending(e.rt)
 
+proc serveOptWorkers(ctx: JSContextRef; obj: JSValueRef;
+    name: string): int =
+  ## Reads opts.workers (1..64, default 1). Raises on anything
+  ## malformed (callers turn it into a sync JS throw). Spawning itself
+  ## is POSIX-only (see serve); Windows callers reject workers != 1.
+  result = 1
+  var err = ""
+  let f = getField(ctx, obj, "workers", err)
+  if err != "":
+    raise newException(CatchableError, name & ": opts.workers " & err)
+  if f.kind == nvkUndefined:
+    return 1
+  var v = -1
+  case f.kind
+  of nvkInt: v = int(f.i)
+  of nvkFloat: v = int(f.f)
+  else:
+    raise newException(CatchableError,
+      name & ": opts.workers must be a number")
+  if v < 1 or v > 64:
+    raise newException(CatchableError,
+      name & ": opts.workers must be 1..64")
+  result = v
+
+when not defined(windows):
+
+  proc workerPipeCb(fd: int, events: set[EventType])
+  proc registerWorkerPipe(port: int)
+  proc broadcastWorkerPort(port, msg: int)
+
 proc closeAllServers*() =
   ## Closes every live server and frees per-run client pools. Called
-  ## from the runtime teardown; safe with none live.
+  ## from the runtime teardown; safe with none live. On the main
+  ## thread with workers live, workers stop and join first so the
+  ## shared listen socket outlives their adopted references.
+  when not defined(windows):
+    stopAllWorkers()
   var keys: seq[pointer] = @[]
   for k in httpServers.keys:
     keys.add(k)
@@ -608,6 +660,62 @@ proc closeAllServers*() =
 # Teardown hook: runs at runtime teardown when this module is linked in
 # (binary, or tests that register std/http). Safe with none live.
 onTeardown.add(closeAllServers)
+
+when not defined(windows):
+  proc workerPipeCb(fd: int, events: set[EventType]) =
+    ## Control-pipe dispatcher, runs on the owning worker's loop thread.
+    ## 4-byte port messages (0 = stop everything).
+    var msg: array[4, byte]
+    while true:
+      let n = posix.read(fd.cint, addr msg[0], 4)
+      if n != 4:
+        break
+      let port = int(msg[0]) or (int(msg[1]) shl 8) or
+        (int(msg[2]) shl 16) or (int(msg[3]) shl 24)
+      if port == 0:
+        closeAllServers()
+        let rt = currentRt()
+        if rt != nil:
+          rt.exitRequested = true
+          rt.pending = 0
+          if rt.loop != nil:
+            rt.loop.stop()
+      else:
+        for k, e in httpServers.pairs:
+          if e.port == port:
+            try:
+              closeServerEntry(e.server, e)
+            except CatchableError:
+              discard
+            break
+
+  proc registerWorkerPipe(port: int) =
+    ## Arms this worker's control pipe in its own loop and records the
+    ## write end. A worker that registers after a close/stop broadcast
+    ## shuts its server at once (recordPipe reports it).
+    var fds: array[2, cint]
+    if posix.pipe(fds) != 0:
+      raise newException(OSError, "serve: pipe() failed")
+    setNonBlocking(SocketHandle(fds[0]))
+    let rt = currentRt()
+    rt.ensureLoop().register(fds[0].int, {Read}, workerPipeCb)
+    if recordPipe(port, fds[1]):
+      for k, e in httpServers.pairs:
+        if e.port == port:
+          try:
+            closeServerEntry(e.server, e)
+          except CatchableError:
+            discard
+          break
+
+  proc broadcastWorkerPort(port, msg: int) =
+    var b: array[4, byte]
+    b[0] = byte(msg and 0xFF)
+    b[1] = byte((msg shr 8) and 0xFF)
+    b[2] = byte((msg shr 16) and 0xFF)
+    b[3] = byte((msg shr 24) and 0xFF)
+    for w in markClosed(port):
+      discard posix.write(w, addr b[0], 4)
 
 ## Builds the std/http namespace object.
 init proc(module: Module) =
@@ -708,6 +816,10 @@ init proc(module: Module) =
     module.registerFn serve(port: int64, second: JSValueRef,
         third ?: JSValueRef, handler ?: JSObjectRef):
       ## http.serve(port[, host][, opts], handler) -> {port, host}
+      ## opts.workers (1..64, default 1) scales across worker threads,
+      ## each a full runtime re-running the script (see the module
+      ## header). Workers share the port: Linux balances a REUSEPORT
+      ## group, macOS adopts one shared listen socket.
       if port < 1 or port > 65535:
         throwError(ctx, "serve: port must be 1..65535", exception)
         return nil
@@ -715,6 +827,7 @@ init proc(module: Module) =
       let n = int(argumentCount)
       var host = "127.0.0.1"
       var haveOpts = false
+      var workers = 1
       var sopts = defaultHttpServerOptions()
       var handlerV: JSValueRef = nil
       if n == 2:
@@ -734,6 +847,7 @@ init proc(module: Module) =
         elif serr == "" and sk.kind == nvkObject:
           try:
             sopts = parseServeOpts(ctx, second, "serve")
+            workers = serveOptWorkers(ctx, second, "serve")
           except CatchableError as e:
             throwError(ctx, e.msg, exception)
             return nil
@@ -769,6 +883,7 @@ init proc(module: Module) =
           return nil
         try:
           sopts = parseServeOpts(ctx, third, "serve")
+          workers = serveOptWorkers(ctx, third, "serve")
         except CatchableError as e:
           throwError(ctx, e.msg, exception)
           return nil
@@ -786,8 +901,23 @@ init proc(module: Module) =
       if haveOpts:
         server.applyOptions(sopts)
       server.handler = httpOnRequest
+      when defined(windows):
+        if workers != 1:
+          throwError(ctx, "serve: opts.workers is not supported on Windows",
+            exception)
+          return nil
+      when not defined(windows):
+        let spawning = workers > 1 and not inHttpWorker()
+        let (adoptFd, hasAdoptFd) = readWorkerAdoptFd()
+        let adopting = inHttpWorker() and hasAdoptFd
       try:
-        server.listen(host, portNum)
+        when not defined(windows):
+          if adopting:
+            server.adoptListenFd(SocketHandle(adoptFd))
+          else:
+            server.listen(host, portNum)
+        else:
+          server.listen(host, portNum)
       except CatchableError as e:
         try:
           server.close()
@@ -800,6 +930,35 @@ init proc(module: Module) =
       httpServers[cast[pointer](server)] =
         ServerEntry(ctx: ctx, rt: rt, server: server, handlerFn: handlerV,
           port: portNum, host: host)
+      when not defined(windows):
+        if spawning:
+          var boundFd = 0.cint
+          var hasBoundFd = false
+          when defined(macosx):
+            # macOS does not balance REUSEPORT groups: share this
+            # socket, every worker adopts it in its own loop.
+            hasBoundFd = true
+            boundFd = cint(int(server.tcpServers[^1].fd))
+          try:
+            for i in 1 ..< workers:
+              spawnWorker(makeBoot(rt.source, rt.sourceURL, rt.baseDir,
+                host, rt.argv, portNum, boundFd, hasBoundFd), portNum)
+          except CatchableError as e:
+            try:
+              closeServerEntry(server, httpServers[cast[pointer](server)])
+            except CatchableError:
+              discard
+            throwError(ctx, "serve: " & e.msg, exception)
+            return nil
+        try:
+          registerWorkerPipe(portNum)
+        except CatchableError as e:
+          try:
+            closeServerEntry(server, httpServers[cast[pointer](server)])
+          except CatchableError:
+            discard
+          throwError(ctx, "serve: " & e.msg, exception)
+          return nil
       returnJson(ctx, %*{"port": portNum, "host": host}, "serve", exception)
 
     module.registerFn close(port: int64):
@@ -819,6 +978,10 @@ init proc(module: Module) =
         throwError(ctx, "close: no server on port " & $port, exception)
         return nil
       try:
+        when not defined(windows):
+          # Workers mode: every participant closes its own server;
+          # the pipe broadcast reaches the other workers.
+          broadcastWorkerPort(portNum, portNum)
         closeServerEntry(target.server, target)
       except CatchableError as err:
         throwError(ctx, "close: " & err.msg, exception)
