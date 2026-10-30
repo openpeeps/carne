@@ -19,6 +19,7 @@ require("std/diff");
 require("std/gettext");
 require("std/regex");
 require("std/mimetype");
+require("std/benchmark");
 require("std/qr");
 require("std/svg");
 require("std/http");
