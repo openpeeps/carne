@@ -6,8 +6,9 @@
 # `clue publish` against nim-lang/packages.
 #
 # Auth is a `.tokens` file in the carne home (`~/.carne/.tokens`,
-# `CARNE_HOME` overrides it) with `KEY=VALUE` lines; the publish token
-# lives under `CARNE_GITHUB_TOKEN`. No env vars, no nimble fallback.
+# `CARNE_HOME` overrides it) holding the GitHub token: one token per
+# line, first non-empty line wins (`#` comments and blank lines skipped).
+# No env vars, no nimble fallback.
 # The token stays in memory (and inside push URLs) only.
 #
 # Package metadata comes from `package.json`: `name`, `description`
@@ -31,9 +32,7 @@ const
   publishApiBase* = "https://api.github.com/repos/"
   publishApiRoot* = "https://api.github.com"
   publishDefaultBranch* = "main"
-  publishTokenKey* = "CARNE_GITHUB_TOKEN"
   publishTokensFile* = ".tokens"
-
 type
   PublishOpts* = tuple[tags, web, urlOverride: string; dryRun, yesMode: bool]
     ## `--tags`/`--web`/`--url` overrides plus `--dry-run`/`--yes` modes.
@@ -46,25 +45,16 @@ proc tokensFilePath*(home = ""): string =
   h / publishTokensFile
 
 proc readPublishToken*(path = ""): string =
-  ## The GitHub token for publishing: value of `CARNE_GITHUB_TOKEN`
-  ## in the `.tokens` file. "" when the file or key is missing.
-  ## The value itself is never logged.
+  ## The GitHub token for publishing: first non-empty line of the
+  ## `.tokens` file (`#` comments and blank lines skipped). ""
+  ## when the file holds no token. The value itself is never logged.
   let p = if path.len > 0: path else: tokensFilePath()
   try:
     for line in readFile(p).splitLines():
       let s = line.strip()
       if s.len == 0 or s.startsWith('#'):
         continue
-      let eq = s.find('=')
-      if eq <= 0:
-        continue
-      if s[0 ..< eq].strip() == publishTokenKey:
-        var v = s[eq + 1 .. ^1].strip()
-        if v.len >= 2 and ((v[0] == '"' and v[^1] == '"') or
-            (v[0] == '\'' and v[^1] == '\'')):
-          v = v[1 ..< ^1]
-        if v.len > 0:
-          return v
+      return s
   except IOError, OSError:
     discard
   ""
@@ -391,8 +381,8 @@ proc publishCommand*(dir: string; opts: PublishOpts; home = ""): int =
   let tokPath = tokensFilePath(home)
   let token = readPublishToken(tokPath)
   if token.len == 0:
-    return fail("No GitHub token found. Put `" & publishTokenKey &
-      "=...` in " & tokPath & " (one KEY=VALUE per line, chmod 600).")
+    return fail("No GitHub token found. Put the token on its own line in " &
+      tokPath & " (chmod 600).")
   if tokensFileExposed(tokPath):
     stderr.writeLine("warning: " & tokPath &
       " is group/world-readable; consider `chmod 600 " & tokPath & "`.")

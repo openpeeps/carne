@@ -95,20 +95,16 @@ test "manifestHomepage reads the homepage string":
     "https://github.com/openpeeps/greet"
   check manifestHomepage(fromJson("""{"name": "x"}""")) == ""
 
-test "readPublishToken parses KEY=VALUE with comments and quotes":
+test "readPublishToken takes the first non-empty line":
   let dir = getTempDir() / "carne_publish_tokens"
   if dirExists(dir):
     removeDir(dir)
   createDir(dir)
   defer: removeDir(dir)
   let f = dir / ".tokens"
-  writeFile(f, "# secrets\nOTHER=1\nCARNE_GITHUB_TOKEN=ghp_test123\n")
+  writeFile(f, "# secrets\n\n  ghp_test123  \nsecond-line-ignored\n")
   check readPublishToken(f) == "ghp_test123"
-  writeFile(f, "CARNE_GITHUB_TOKEN=\"quoted-token\"  \n")
-  check readPublishToken(f) == "quoted-token"
-  writeFile(f, "CARNE_GITHUB_TOKEN=\n")
-  check readPublishToken(f) == ""
-  writeFile(f, "SOMETHING_ELSE=1\n")
+  writeFile(f, "# only a comment\n   \n")
   check readPublishToken(f) == ""
   check readPublishToken(dir / "missing") == ""
 

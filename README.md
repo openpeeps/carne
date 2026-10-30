@@ -109,7 +109,7 @@ and npm-style sources:
   (fork, insert into `packages.json` in name order, PR against `main`).
   `description`, `license` and `keywords` (registry tags) are required in
   `package.json`; the repo URL comes from `.git/config` (`remote.origin.url`).
-  Auth is `CARNE_GITHUB_TOKEN` in `~/.carne/.tokens` (`KEY=VALUE`, `chmod 600`).
+  Auth is the GitHub token on its own line in `~/.carne/.tokens` (`chmod 600`).
   `--dry-run` prints the entry without touching the network.
 
 ### Package imports
