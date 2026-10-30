@@ -48,6 +48,7 @@ proc printHelp*() =
   echo "  pkg develop <path>      " & grey("editable install from a local directory")
   echo "  pkg prune               " & grey("remove orphaned packages")
   echo "  pkg refresh             " & grey("re-download registry data")
+  echo "  pkg publish [opts]      " & grey("open a PR adding this package to the registry")
   echo ""
   echo "  -h, --help              " & grey("show this help")
   echo "  --version               " & grey("show version")

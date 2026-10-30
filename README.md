@@ -72,6 +72,7 @@ Packages
   pkg develop <path>      editable install from a local directory
   pkg prune               remove orphaned packages
   pkg refresh             re-download registry data
+  pkg publish [opts]      open a PR adding this package to the registry
 
   -h, --help              show this help
   --version               show version
@@ -102,6 +103,14 @@ and npm-style sources:
 - `carne pkg develop [path]`: editable installs from a local directory
   (default: current dir).
 - `remove`, `update`, `list`, `prune`, `refresh` manage the store.
+- `carne pkg publish [--tags=..] [--web=..] [--url=..] [--dry-run] [--yes]`:
+  opens a pull request adding the current package to
+  [openpeeps/carnepkgs](https://github.com/openpeeps/carnepkgs)
+  (fork, insert into `packages.json` in name order, PR against `main`).
+  `description`, `license` and `keywords` (registry tags) are required in
+  `package.json`; the repo URL comes from `.git/config` (`remote.origin.url`).
+  Auth is `CARNE_GITHUB_TOKEN` in `~/.carne/.tokens` (`KEY=VALUE`, `chmod 600`).
+  `--dry-run` prints the entry without touching the network.
 
 ### Package imports
 Installed packages load through `require("pkg/<name>")` as CommonJS:
@@ -535,6 +544,7 @@ fires too when given). `ws://` only in v1, no TLS yet.
 - [ ] `std/gettext`: `.mo` support; `std/qr`: decode; `std/svg`: stringify
 - [ ] `exportClass` in the module DSL
 - [x] Public package registry ([openpeeps/carnepkgs](https://github.com/openpeeps/carnepkgs))
+- [x] `carne pkg publish` (fork + PR flow, `.tokens` auth)
 - [x] Beyond macOS (Linux via JavaScriptCoreGTK 4.1)
 
 
