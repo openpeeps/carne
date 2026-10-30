@@ -398,6 +398,20 @@ console.log(regex.exec("(\\w+)@(\\w+)", "mail ada@x.io").match); // "ada@x"
 console.log(regex.matchAll("a+", "aa b aaa").length); // 2
 ```
 
+### `std/mimetype`
+
+MIME type lookup over the `mimedb` database (bundled, parsed lazily on first query).
+Extensions accept a leading dot and any case; unknown inputs answer `null`.
+`info` returns `{source, extensions, compressible}`.
+
+```js
+const mimetype = require("std/mimetype");
+console.log(mimetype.lookup(".PNG")); // "image/png"
+console.log(mimetype.lookup("nope")); // null
+console.log(JSON.stringify(mimetype.info("text/html").extensions)); // ["html","htm","shtml"]
+console.log(mimetype.isExtension("zip"), mimetype.has("audio/mp4")); // true true
+```
+
 ### `std/qr`
 
 QR code generation (Model 2). Decoding is out of scope in v1.
@@ -492,7 +506,7 @@ fires too when given). `ws://` only in v1, no TLS yet.
 - [x] Package management (`carne pkg`, manifests)
 - [x] Format std libs (yaml, toml, ical, dotenv, plist, bson, csv, xml, vcard, feed)
 - [x] `std/sql`, `std/crypto`, `std/path`, `std/colors`
-- [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/qr`, `std/svg`
+- [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/mimetype`, `std/qr`, `std/svg`
 - [x] `std/http` (async client + server) + top-level promise unwrap in `runCode`
 - [x] `std/ws` (async + sync client, server, no TLS)
 - [x] Lazy startup (deferred event loop, per-run TLS, cached spec data)

@@ -26,6 +26,7 @@ import ./css
 import ./diff
 import ./gettext
 import ./regex
+import ./mimetype
 import ./qr
 import ./svg
 import ./http
@@ -51,6 +52,7 @@ registerStd("std/css", css.install)
 registerStd("std/diff", diff.install)
 registerStd("std/gettext", gettext.install)
 registerStd("std/regex", regex.install)
+registerStd("std/mimetype", mimetype.install)
 registerStd("std/qr", qr.install)
 registerStd("std/svg", svg.install)
 registerStd("std/http", http.install)
