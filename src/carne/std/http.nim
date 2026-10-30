@@ -5,6 +5,7 @@
 #     -> {status: 200, statusText: "OK", headers: {...}, body: "..."}
 #   await http.get(url[, {headers, timeoutMs}])
 #   await http.post(url, body[, {headers, timeoutMs}])
+#   await http.put(url, body[, opts]) // patch, delete, head, options too
 #   const srv = http.serve(3000, req => ({body: "hi " + req.path}));
 #   http.close(srv.port)
 #
@@ -15,6 +16,11 @@
 # undefined/null -> 200 empty; anything else -> JSON body. A JS throw in
 # a handler answers 500 and is recorded as uncaught. Bodies are UTF-8
 # strings in v1; https uses a default client context with system CAs.
+# HEAD requests and 101/204/205/304 statuses answer with an empty body
+# (fetch null-body-status semantics). The request object carries
+# {method, path, query, url, headers, body, clientIp}.
+# serve takes tuning opts: serve(port[, host][, opts], handler) with
+# opts = {keepAliveMs?, readTimeoutMs?, maxBodySize?}.
 #
 # Note: scripts need an async IIFE for await (top-level await is out of
 # scope in v1): `(async () => { ... })()`. The runtime unwraps a
@@ -170,7 +176,7 @@ proc responseToJson(res: HttpClientResponse): JsonNode =
   result["headers"] = hdrs
   result["body"] = %res.getBodyString()
 
-proc reqToJson(req: HttpRequest): JsonNode =
+proc reqToJson(req: HttpRequest; clientIp: string): JsonNode =
   result = newJObject()
   result["method"] = %methodToString(req.getMethod())
   let p: string = req.getPath()
@@ -179,6 +185,7 @@ proc reqToJson(req: HttpRequest): JsonNode =
   result["path"] = %p
   result["query"] = %q
   result["url"] = %u
+  result["clientIp"] = %clientIp
   var hdrs = newJObject()
   for k, v in req.getHeaders().pairs:
     hdrs[k] = %v
@@ -273,7 +280,13 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
       return
     let e = httpServers[srvKey]
     let c = e.ctx
-    let reqVal = jsonToJS(c, reqToJson(req))
+    let headOnly = req.getMethod() == HttpHead
+    var clientIp = ""
+    try:
+      clientIp = res.getClientIp()
+    except CatchableError:
+      clientIp = ""
+    let reqVal = jsonToJS(c, reqToJson(req, clientIp))
     var ex: JSValueRef = nil
     var argv: array[1, JSValueRef]
     argv[0] = reqVal
@@ -292,7 +305,7 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
     if JSValueIsString(c, ret):
       res.status(Http200)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .send(valueToString(c, ret))
+        .send(if headOnly: "" else: valueToString(c, ret))
       return
     var jerr = ""
     let node = jsToJson(c, ret, jerr)
@@ -301,7 +314,7 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
       return
     if node.kind != JObject:
       res.status(Http200).header("Content-Type", "application/json")
-        .send($node)
+        .send(if headOnly: "" else: $node)
       return
     var code = Http200
     if node.hasKey("status"):
@@ -330,10 +343,51 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
         body = ""
       else:
         body = $b
+    # Null-body statuses (fetch semantics) and HEAD never carry a body.
+    if headOnly or code in {Http101, Http204, Http205, Http304}:
+      body = ""
     res.status(code)
     for (k, v) in hdrs:
       res.header(k, v)
     res.send(body)
+
+proc serveOptNum(ctx: JSContextRef; obj: JSValueRef; name, key: string;
+    allowZero: bool): int =
+  ## One numeric serve opt, -1 when absent/undefined. Raises on anything
+  ## malformed (callers turn it into a sync JS throw).
+  var err = ""
+  let f = getField(ctx, obj, key, err)
+  if err != "":
+    raise newException(CatchableError, name & ": opts." & key & " " & err)
+  if f.kind == nvkUndefined:
+    return -1
+  var v = -1
+  case f.kind
+  of nvkInt: v = int(f.i)
+  of nvkFloat: v = int(f.f)
+  else:
+    raise newException(CatchableError,
+      name & ": opts." & key & " must be a number")
+  if v < 0 or (v == 0 and not allowZero):
+    raise newException(CatchableError, name & ": opts." & key &
+      (if allowZero: " must be >= 0" else: " must be positive"))
+  v
+
+proc parseServeOpts(ctx: JSContextRef; obj: JSValueRef; name: string):
+    HttpServerOptions =
+  ## Reads {keepAliveMs?, readTimeoutMs?, maxBodySize?} from the serve
+  ## opts object, starting from powpow's defaults. Raises on anything
+  ## malformed (callers turn it into a sync JS throw).
+  result = defaultHttpServerOptions()
+  let ka = serveOptNum(ctx, obj, name, "keepAliveMs", true)
+  if ka >= 0:
+    result.keepAliveMs = ka
+  let rt = serveOptNum(ctx, obj, name, "readTimeoutMs", true)
+  if rt >= 0:
+    result.readTimeoutMs = rt
+  let mb = serveOptNum(ctx, obj, name, "maxBodySize", false)
+  if mb >= 0:
+    result.maxBodySize = mb
 
 proc closeServerEntry(srv: HttpServer; e: ServerEntry) =
   srv.close()
@@ -404,44 +458,145 @@ init proc(module: Module) =
       opts.body = body
       startFetch(ctx, currentRt(), url, opts, "post", exception)
 
-    module.registerFn serve(port: int64, hostOrHandler: JSValueRef,
-        handler ?: JSObjectRef):
-      ## http.serve(port[, host], handler) -> {port, host}
+    module.registerFn put(url: string, body: string,
+        optsObj ?: JSObjectRef):
+      ## http.put(url, body[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
+      var opts: FetchOpts
+      try:
+        opts = parseOpts(ctx, optsObj, "put", false, false)
+      except CatchableError as e:
+        throwError(ctx, e.msg, exception)
+        return nil
+      opts.meth = HttpPut
+      opts.body = body
+      startFetch(ctx, currentRt(), url, opts, "put", exception)
+
+    module.registerFn patch(url: string, body: string,
+        optsObj ?: JSObjectRef):
+      ## http.patch(url, body[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
+      var opts: FetchOpts
+      try:
+        opts = parseOpts(ctx, optsObj, "patch", false, false)
+      except CatchableError as e:
+        throwError(ctx, e.msg, exception)
+        return nil
+      opts.meth = HttpPatch
+      opts.body = body
+      startFetch(ctx, currentRt(), url, opts, "patch", exception)
+
+    module.registerFn delete(url: string, optsObj ?: JSObjectRef):
+      ## http.delete(url[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
+      var opts: FetchOpts
+      try:
+        opts = parseOpts(ctx, optsObj, "delete", false, false)
+      except CatchableError as e:
+        throwError(ctx, e.msg, exception)
+        return nil
+      opts.meth = HttpDelete
+      startFetch(ctx, currentRt(), url, opts, "delete", exception)
+
+    module.registerFn head(url: string, optsObj ?: JSObjectRef):
+      ## http.head(url[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}> (body is always "")
+      var opts: FetchOpts
+      try:
+        opts = parseOpts(ctx, optsObj, "head", false, false)
+      except CatchableError as e:
+        throwError(ctx, e.msg, exception)
+        return nil
+      opts.meth = HttpHead
+      startFetch(ctx, currentRt(), url, opts, "head", exception)
+
+    module.registerFn options(url: string, optsObj ?: JSObjectRef):
+      ## http.options(url[, {headers, timeoutMs}]) -> Promise<{status, statusText, headers, body}>
+      var opts: FetchOpts
+      try:
+        opts = parseOpts(ctx, optsObj, "options", false, false)
+      except CatchableError as e:
+        throwError(ctx, e.msg, exception)
+        return nil
+      opts.meth = HttpOptions
+      startFetch(ctx, currentRt(), url, opts, "options", exception)
+
+    module.registerFn serve(port: int64, second: JSValueRef,
+        third ?: JSValueRef, handler ?: JSObjectRef):
+      ## http.serve(port[, host][, opts], handler) -> {port, host}
       if port < 1 or port > 65535:
         throwError(ctx, "serve: port must be 1..65535", exception)
         return nil
       let portNum = int(port)
       let n = int(argumentCount)
       var host = "127.0.0.1"
+      var haveOpts = false
+      var sopts = defaultHttpServerOptions()
       var handlerV: JSValueRef = nil
       if n == 2:
-        var herr0 = ""
-        let hv0 = fromJS(ctx, hostOrHandler, herr0)
-        if herr0 != "" or hv0.kind != nvkFunction:
+        var ferr2 = ""
+        let hv2 = fromJS(ctx, second, ferr2)
+        if ferr2 != "" or hv2.kind != nvkFunction:
           throwTypeMismatch(ctx, "serve", "handler",
-            (if herr0 != "": "unreadable" else: jsTypeName(hv0.kind)),
+            (if ferr2 != "": "unreadable" else: jsTypeName(hv2.kind)),
             "function", docBlock, exception)
           return nil
-        handlerV = hostOrHandler
+        handlerV = second
+      elif n == 3:
+        var serr = ""
+        let sk = fromJS(ctx, second, serr)
+        if serr == "" and sk.kind == nvkString:
+          host = sk.s
+        elif serr == "" and sk.kind == nvkObject:
+          try:
+            sopts = parseServeOpts(ctx, second, "serve")
+          except CatchableError as e:
+            throwError(ctx, e.msg, exception)
+            return nil
+          haveOpts = true
+        else:
+          throwTypeMismatch(ctx, "serve", "hostOrOpts",
+            (if serr != "": "unreadable" else: jsTypeName(sk.kind)),
+            "string|object", docBlock, exception)
+          return nil
+        var ferr3 = ""
+        let hv3 = fromJS(ctx, third, ferr3)
+        if ferr3 != "" or hv3.kind != nvkFunction:
+          throwTypeMismatch(ctx, "serve", "handler",
+            (if ferr3 != "": "unreadable" else: jsTypeName(hv3.kind)),
+            "function", docBlock, exception)
+          return nil
+        handlerV = third
       else:
         var herr = ""
-        let h = fromJS(ctx, hostOrHandler, herr)
+        let h = fromJS(ctx, second, herr)
         if herr != "" or h.kind != nvkString:
           throwTypeMismatch(ctx, "serve", "host",
             (if herr != "": "unreadable" else: jsTypeName(h.kind)),
             "string", docBlock, exception)
           return nil
         host = h.s
+        var oerr = ""
+        let oo = fromJS(ctx, third, oerr)
+        if oerr != "" or oo.kind != nvkObject:
+          throwTypeMismatch(ctx, "serve", "opts",
+            (if oerr != "": "unreadable" else: jsTypeName(oo.kind)),
+            "object", docBlock, exception)
+          return nil
+        try:
+          sopts = parseServeOpts(ctx, third, "serve")
+        except CatchableError as e:
+          throwError(ctx, e.msg, exception)
+          return nil
+        haveOpts = true
+        var ferr4 = ""
+        let hv4 = fromJS(ctx, handler, ferr4)
+        if ferr4 != "" or hv4.kind != nvkFunction:
+          throwTypeMismatch(ctx, "serve", "handler",
+            (if ferr4 != "": "unreadable" else: jsTypeName(hv4.kind)),
+            "function", docBlock, exception)
+          return nil
         handlerV = handler
-      var ferr = ""
-      let hv = fromJS(ctx, handlerV, ferr)
-      if ferr != "" or hv.kind != nvkFunction:
-        throwTypeMismatch(ctx, "serve", "handler",
-          (if ferr != "": "unreadable" else: jsTypeName(hv.kind)),
-          "function", docBlock, exception)
-        return nil
       let rt = currentRt()
       var server = newHttpServer(rt.ensureLoop(), populate = false)
+      if haveOpts:
+        server.applyOptions(sopts)
       server.handler = httpOnRequest
       try:
         server.listen(host, portNum)

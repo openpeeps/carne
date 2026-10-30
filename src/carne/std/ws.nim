@@ -13,13 +13,22 @@
 # composes with timers and std/http. connectSync blocks, pumping the same
 # loop until the handshake completes, then returns an established handle.
 # serve borrows the loop and holds it alive until close (Node semantics).
+# Both connect forms take handshake opts in the same object as the
+# handlers: {headers?, protocols?, timeoutMs?, pingIntervalMs?,
+# idleTimeoutMs?, maxFrameSize?, onOpen?, onMessage?, onClose?, onError?}.
 #
-# Handles are `{send(text), close([code[, reason]])}`. Messages arrive as
-# `{data, isBinary}`; closes as `{code, reason}`; errors as `{message}`.
+# Handles are `{send(text[, {binary}]), ping([data]), protocol(), close([code[, reason]])}`.
+# Messages arrive as `{data, isBinary}`; closes as `{code, reason}`;
+# errors as `{message}`. Bodies are UTF-8 strings in v1; binary frames
+# are delivered as strings with isBinary: true, and sent with
+# `send(text, {binary: true})` (no TypedArrays in v1). `ping()` sends a
+# control ping (the peer's pong is answered internally). `protocol()`
+# returns the subprotocol the server selected ("" when none).
 # Server callbacks get `(conn, payload)`, client callbacks just `(payload)`
-# (onOpen takes no arguments). Bodies are UTF-8 strings in v1; binary
-# frames are delivered as strings with isBinary: true. wss:// URLs are
-# rejected in v1 (no TLS yet): use ws://.
+# (onOpen takes no arguments).
+# wss:// clients are supported via a per-run shared TLS context with
+# system CAs (same pattern as std/http); serving wss:// needs cert
+# loading and is out of scope in v1.
 #
 # connect() reports handshake failures by rejecting its promise (like
 # std/http fetch); an onError handler fires too when given. Without a
@@ -36,6 +45,7 @@ import javascriptcore
 
 import powpow/proto/ws
 from powpow/loop import addTimer, poll, stop
+from powpow/net/tls import SslContext, newClientTlsContext
 
 import ../bridge
 import ../modules
@@ -73,6 +83,9 @@ type
 
 var wsConns: Table[pointer, ConnEntry]
 var wsServers: Table[pointer, ServerEntry]
+var wsTlsCtxs: Table[pointer, SslContext]
+  ## One shared client TLS context per run for wss:// connects, freed
+  ## from the table by closeAllWs at teardown (the context itself is GC'd).
 
 var wsFireDepth = 0
   ## >0 while a user callback runs inside a powpow dispatcher. Destroying
@@ -88,6 +101,19 @@ proc decPending(rt: Runtime) =
   if rt.pending <= 0 and not rt.exitRequested:
     rt.pending = 0
     rt.loop.stop()
+
+proc tlsCtxFor(rt: Runtime): SslContext =
+  ## The run's shared client TLS context for wss://, created lazily on
+  ## first use. nil when OpenSSL init fails (callers throw for wss://).
+  ## Plain-ws runs never pay OpenSSL init.
+  let key = cast[pointer](rt)
+  if wsTlsCtxs.hasKey(key):
+    return wsTlsCtxs[key]
+  try:
+    result = newClientTlsContext()
+  except CatchableError:
+    result = nil
+  wsTlsCtxs[key] = result
 
 proc fireCb(c: JSContextRef; rt: Runtime; fn: JSObjectRef;
     args: varargs[JSValueRef]) =
@@ -415,8 +441,8 @@ proc findConnByHandle(handle: JSObjectRef): pointer =
       return k
   nil
 
-registerFn(ctx, connSend(text: string)):
-  ## conn.send(text): thisObject is the handle created by connect/serve.
+registerFn(ctx, connSend(text: string, optsObj ?: JSObjectRef)):
+  ## conn.send(text[, {binary}]): thisObject is the handle created by connect/serve.
   if thisObject == nil or not JSValueIsObject(ctx, thisObject):
     throwError(ctx, "send: called on an invalid connection", exception)
     return nil
@@ -428,8 +454,27 @@ registerFn(ctx, connSend(text: string)):
   if e.closing or e.closed or e.ws == nil or not e.openOk:
     throwError(ctx, "send: connection is closed", exception)
     return nil
+  var binary = false
+  if optsObj != nil:
+    var berr = ""
+    let b = getField(ctx, optsObj, "binary", berr)
+    if berr != "":
+      throwError(ctx, "send: options.binary " & berr, exception)
+      return nil
+    if b.kind == nvkBool:
+      binary = b.b
+    elif b.kind != nvkUndefined:
+      throwError(ctx, "send: options.binary must be a boolean", exception)
+      return nil
   try:
-    e.ws.sendMessage(text)
+    if binary:
+      # Strings are UTF-8 bytes on the wire here (no TypedArrays in v1).
+      if text.len > 0:
+        e.ws.sendBinary(text.toOpenArrayByte(0, text.high))
+      else:
+        e.ws.sendBinary([])
+    else:
+      e.ws.sendMessage(text)
   except CatchableError as err:
     throwError(ctx, "send: " & err.msg, exception)
     return nil
@@ -472,12 +517,67 @@ registerFn(ctx, connClose(code: default(int64, 1000), reason ?: string)):
     discard
   toJS(ctx, true)
 
+registerFn(ctx, connPing(data ?: string)):
+  ## conn.ping([data]): send a control ping; the peer's pong is answered internally.
+  if thisObject == nil or not JSValueIsObject(ctx, thisObject):
+    throwError(ctx, "ping: called on an invalid connection", exception)
+    return nil
+  let key = findConnByHandle(thisObject)
+  if key == nil:
+    throwError(ctx, "ping: connection is closed", exception)
+    return nil
+  let e = wsConns[key]
+  if e.closing or e.closed or e.ws == nil or not e.openOk:
+    throwError(ctx, "ping: connection is closed", exception)
+    return nil
+  try:
+    if data.len > 0:
+      e.ws.sendPing(data.toOpenArrayByte(0, data.high))
+    else:
+      e.ws.sendPing()
+  except CatchableError as err:
+    throwError(ctx, "ping: " & err.msg, exception)
+    return nil
+  toJS(ctx, true)
+
+registerFn(ctx, connProtocol()):
+  ## conn.protocol(): the subprotocol the server selected ("" when none).
+  if thisObject == nil or not JSValueIsObject(ctx, thisObject):
+    throwError(ctx, "protocol: called on an invalid connection", exception)
+    return nil
+  let key = findConnByHandle(thisObject)
+  if key == nil:
+    throwError(ctx, "protocol: connection is closed", exception)
+    return nil
+  let e = wsConns[key]
+  if e.ws == nil:
+    throwError(ctx, "protocol: connection is closed", exception)
+    return nil
+  var proto = ""
+  try:
+    proto = e.ws.getProtocol()
+  except CatchableError as err:
+    throwError(ctx, "protocol: " & err.msg, exception)
+    return nil
+  toJS(ctx, proto)
+
 proc makeConnHandle(ctx: JSContextRef; exception: ptr JSValueRef): JSObjectRef =
-  ## Fresh `{send, close}` handle; caller protects it via the entry.
+  ## Fresh `{send, ping, protocol, close}` handle; caller protects it
+  ## via the entry.
   result = newObject(ctx)
   var ex: JSValueRef = nil
   setProp(ctx, result, "send", makeFunction(ctx, "send", connSend),
     addr ex)
+  if ex != nil:
+    throwError(ctx, "ws: could not create connection handle", exception)
+    return nil
+  setProp(ctx, result, "ping", makeFunction(ctx, "ping", connPing),
+    addr ex)
+  if ex != nil:
+    throwError(ctx, "ws: could not create connection handle", exception)
+    return nil
+  setProp(ctx, result, "protocol", makeFunction(ctx, "protocol",
+    connProtocol), addr ex)
   if ex != nil:
     throwError(ctx, "ws: could not create connection handle", exception)
     return nil
@@ -509,44 +609,134 @@ proc insertConn(ctx: JSContextRef; rt: Runtime; ws: WsConnection;
   inc rt.pending
   handle
 
-proc parseWsTarget(url: string; name: string): tuple[host: string, port: int,
-    path: string] =
-  ## Splits a ws:// URL; raises on anything else (callers turn it into a
-  ## sync JS throw). wss:// is rejected: no TLS in v1.
-  if url.strip().toLowerAscii().startsWith("wss:"):
+type
+  WsConnectOpts = object
+    headers: seq[(string, string)]
+    protocols: seq[string]
+    timeoutMs: int
+    pingIntervalMs: int
+    idleTimeoutMs: int
+    maxFrameSize: int
+
+proc defaultConnectOpts(): WsConnectOpts =
+  WsConnectOpts(headers: @[], protocols: @[],
+    timeoutMs: DefaultWsTimeoutMs, pingIntervalMs: 0, idleTimeoutMs: 0,
+    maxFrameSize: DefaultMaxFrameSize)
+
+proc connectOptNum(ctx: JSContextRef; obj: JSValueRef; name, key: string;
+    defaultVal: int; allowZero: bool): int =
+  ## One numeric connect opt, `defaultVal` when absent/undefined. Raises
+  ## on anything malformed (callers turn it into a sync JS throw).
+  var err = ""
+  let f = getField(ctx, obj, key, err)
+  if err != "":
+    raise newException(CatchableError, name & ": options." & key & " " & err)
+  if f.kind == nvkUndefined:
+    return defaultVal
+  var v = defaultVal
+  case f.kind
+  of nvkInt: v = int(f.i)
+  of nvkFloat: v = int(f.f)
+  else:
     raise newException(CatchableError,
-      name & ": wss:// URLs need TLS support (out of scope in v1)")
+      name & ": options." & key & " must be a number")
+  if v < 0 or (v == 0 and not allowZero):
+    raise newException(CatchableError, name & ": options." & key &
+      (if allowZero: " must be >= 0" else: " must be positive"))
+  v
+
+proc parseConnectOpts(ctx: JSContextRef; obj: JSValueRef; name: string):
+    WsConnectOpts =
+  ## Reads {headers?, protocols?, timeoutMs?, pingIntervalMs?,
+  ## idleTimeoutMs?, maxFrameSize?} from the connect opts object (which
+  ## may also carry the onXxx handlers — those are read separately).
+  ## Raises on anything malformed. nil obj means all defaults.
+  result = defaultConnectOpts()
+  if obj == nil:
+    return
+  result.timeoutMs = connectOptNum(ctx, obj, name, "timeoutMs",
+    DefaultWsTimeoutMs, false)
+  result.pingIntervalMs = connectOptNum(ctx, obj, name, "pingIntervalMs",
+    0, true)
+  result.idleTimeoutMs = connectOptNum(ctx, obj, name, "idleTimeoutMs",
+    0, true)
+  result.maxFrameSize = connectOptNum(ctx, obj, name, "maxFrameSize",
+    DefaultMaxFrameSize, false)
+  var err = ""
+  let h = getField(ctx, obj, "headers", err)
+  if err != "":
+    raise newException(CatchableError, name & ": options.headers " & err)
+  if h.kind != nvkUndefined:
+    if h.kind != nvkObject:
+      raise newException(CatchableError,
+        name & ": options.headers must be an object")
+    for k, hv in h.obj.pairs:
+      if hv.kind != nvkString:
+        raise newException(CatchableError,
+          name & ": header \"" & k & "\" must be a string")
+      result.headers.add((k, hv.s))
+  let p = getField(ctx, obj, "protocols", err)
+  if err != "":
+    raise newException(CatchableError, name & ": options.protocols " & err)
+  if p.kind != nvkUndefined:
+    if p.kind != nvkArray:
+      raise newException(CatchableError,
+        name & ": options.protocols must be an array of strings")
+    for item in p.arr:
+      if item.kind != nvkString:
+        raise newException(CatchableError,
+          name & ": options.protocols must be an array of strings")
+      let proto = item.s.strip()
+      if proto.len > 0:
+        result.protocols.add(proto)
+
+proc parseWsTarget(url: string; name: string): tuple[host: string, port: int,
+    path: string, tls: bool] =
+  ## Splits a ws:// or wss:// URL; raises on anything else (callers turn
+  ## it into a sync JS throw).
   try:
     let t = parseWsUrl(url)
-    if t.tls:
-      raise newException(CatchableError,
-        name & ": wss:// URLs need TLS support (out of scope in v1)")
-    (t.host, t.port, t.path)
+    (t.host, t.port, t.path, t.tls)
   except WsError as e:
     raise newException(CatchableError, name & ": " & e.msg)
 
 proc startClient(ctx: JSContextRef; rt: Runtime; url: string; name: string;
     onOpen, onMessage, onClose, onError: JSObjectRef;
-    resolveFn, rejectFn: JSObjectRef; sync: SyncState;
+    resolveFn, rejectFn: JSObjectRef; sync: SyncState; copts: WsConnectOpts;
     exception: ptr JSValueRef): JSObjectRef =
   ## Shared connect core: parses the URL, arms connectWs on the run's loop,
   ## registers the entry. Handlers and settle fns are consumed (protected
   ## or freed) here.
   var host, path: string
   var port: int
+  var tls = false
   try:
-    (host, port, path) = parseWsTarget(url, name)
+    (host, port, path, tls) = parseWsTarget(url, name)
   except CatchableError as e:
     unprotectHandlers(ctx, onOpen, onMessage, onClose, onError,
       resolveFn, rejectFn)
     throwError(ctx, e.msg, exception)
     return nil
+  var tlsCtx: SslContext = nil
+  if tls:
+    tlsCtx = tlsCtxFor(rt)
+    if tlsCtx == nil:
+      unprotectHandlers(ctx, onOpen, onMessage, onClose, onError,
+        resolveFn, rejectFn)
+      throwError(ctx,
+        name & ": wss:// needs a TLS context (OpenSSL init failed)",
+        exception)
+      return nil
   let loop = rt.ensureLoop()
   var ws: WsConnection
   try:
     ws = connectWs(loop, host, port, path, host, onOpen = wsOnOpen,
       onMessage = wsOnMessage, onClose = wsOnClose, onError = wsOnError,
-      handshakeTimeoutMs = DefaultWsTimeoutMs)
+      maxFrameSize = copts.maxFrameSize,
+      handshakeTimeoutMs = copts.timeoutMs, tlsCtx = tlsCtx,
+      extraHeaders = copts.headers, protocols = copts.protocols,
+      pingIntervalMs = copts.pingIntervalMs,
+      idleTimeoutMs = copts.idleTimeoutMs)
   except CatchableError as e:
     unprotectHandlers(ctx, onOpen, onMessage, onClose, onError,
       resolveFn, rejectFn)
@@ -600,6 +790,11 @@ proc closeAllWs*() =
     except CatchableError:
       discard
   wsClosing.setLen(0)
+  var tkeys: seq[pointer] = @[]
+  for k in wsTlsCtxs.keys:
+    tkeys.add(k)
+  for k in tkeys:
+    wsTlsCtxs.del(k)
   var ckeys: seq[pointer] = @[]
   for k in wsConns.keys:
     ckeys.add(k)
@@ -730,10 +925,17 @@ init proc(module: Module) =
       returnJson(ctx, %*{"port": portNum, "host": host}, "serve", exception)
 
     module.registerFn connect(url: string, handlersObj ?: JSObjectRef):
-      ## ws.connect(url[, handlers]) -> Promise<conn> (handshake on the loop)
+      ## ws.connect(url[, {headers?, protocols?, timeoutMs?, pingIntervalMs?, idleTimeoutMs?, maxFrameSize?, ...handlers}]) -> Promise<conn>
       var onOpen, onMessage, onClose, onError: JSObjectRef
       if not readHandlers(ctx, handlersObj, "connect", exception, onOpen,
           onMessage, onClose, onError, docBlock):
+        return nil
+      var copts: WsConnectOpts
+      try:
+        copts = parseConnectOpts(ctx, handlersObj, "connect")
+      except CatchableError as e:
+        unprotectHandlers(ctx, onOpen, onMessage, onClose, onError)
+        throwError(ctx, e.msg, exception)
         return nil
       var resolveFn, rejectFn: JSObjectRef
       var mkEx: JSValueRef = nil
@@ -747,7 +949,7 @@ init proc(module: Module) =
       JSValueProtect(ctx, rejectFn)
       let rt = currentRt()
       let handle = startClient(ctx, rt, url, "connect", onOpen, onMessage,
-        onClose, onError, resolveFn, rejectFn, nil, exception)
+        onClose, onError, resolveFn, rejectFn, nil, copts, exception)
       if handle == nil:
         JSValueUnprotect(ctx, resolveFn)
         JSValueUnprotect(ctx, rejectFn)
@@ -755,28 +957,16 @@ init proc(module: Module) =
       promise
 
     module.registerFn connectSync(url: string, optsObj ?: JSObjectRef):
-      ## ws.connectSync(url[, {timeoutMs?, onOpen?, ...}]) -> established conn
+      ## ws.connectSync(url[, {timeoutMs?, ...}]) -> established conn
       var timeoutMs = DefaultWsTimeoutMs
+      var copts = defaultConnectOpts()
       if optsObj != nil:
-        var err = ""
-        let t = getField(ctx, optsObj, "timeoutMs", err)
-        if err != "":
-          throwError(ctx, "connectSync: options.timeoutMs " & err, exception)
+        try:
+          copts = parseConnectOpts(ctx, optsObj, "connectSync")
+        except CatchableError as e:
+          throwError(ctx, e.msg, exception)
           return nil
-        if t.kind != nvkUndefined:
-          case t.kind
-          of nvkInt:
-            timeoutMs = int(t.i)
-          of nvkFloat:
-            timeoutMs = int(t.f)
-          else:
-            throwError(ctx,
-              "connectSync: options.timeoutMs must be a number", exception)
-            return nil
-          if timeoutMs <= 0:
-            throwError(ctx,
-              "connectSync: options.timeoutMs must be positive", exception)
-            return nil
+        timeoutMs = copts.timeoutMs
       var onOpen, onMessage, onClose, onError: JSObjectRef
       if not readHandlers(ctx, optsObj, "connectSync", exception, onOpen,
           onMessage, onClose, onError, docBlock):
@@ -784,7 +974,7 @@ init proc(module: Module) =
       let rt = currentRt()
       let st = SyncState(done: false, ok: false, msg: "")
       let handle = startClient(ctx, rt, url, "connectSync", onOpen,
-        onMessage, onClose, onError, nil, nil, st, exception)
+        onMessage, onClose, onError, nil, nil, st, copts, exception)
       if handle == nil:
         return nil
       let loop = rt.ensureLoop()

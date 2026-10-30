@@ -118,3 +118,66 @@ test "fetch validates arity and options":
     discard runCode(preamble &
       "await http.get('http://127.0.0.1:18112/', " &
       "{method: 'POST'}); })()")
+
+test "put patch delete head options roundtrip":
+  check runCode(preamble &
+    "const srv = http.serve(18113, req => ({body: req.method + ':' + " &
+    "req.body})); " &
+    "const rs = await Promise.all([" &
+    "http.put('http://127.0.0.1:18113/e', 'p'), " &
+    "http.patch('http://127.0.0.1:18113/e', 'pa'), " &
+    "http.delete('http://127.0.0.1:18113/e'), " &
+    "http.options('http://127.0.0.1:18113/e')]); " &
+    "const h = await http.head('http://127.0.0.1:18113/e'); " &
+    "const viaFetch = await http.fetch('http://127.0.0.1:18113/e', " &
+    "{method: 'DELETE'}); " &
+    "http.close(srv.port); " &
+    "return rs.map(r => r.body).join(',') + '|' + h.status + ':' + " &
+    "h.body.length + ':' + viaFetch.body; })()") ==
+    "PUT:p,PATCH:pa,DELETE:,OPTIONS:|200:0:DELETE:"
+
+test "head and 204 answer empty bodies":
+  check runCode(preamble &
+    "const srv = http.serve(18114, req => " &
+    "req.path === '/gone' ? {status: 204, body: 'x'} : 'body-here'); " &
+    "const h = await http.head('http://127.0.0.1:18114/'); " &
+    "const g = await http.get('http://127.0.0.1:18114/gone'); " &
+    "const ok = await http.get('http://127.0.0.1:18114/'); " &
+    "http.close(srv.port); " &
+    "return h.status + ':' + h.body.length + ' ' + g.status + ':' + " &
+    "g.body.length + ' ' + ok.body; })()") ==
+    "200:0 204:0 body-here"
+
+test "request carries clientIp":
+  check runCode(preamble &
+    "const srv = http.serve(18115, req => ({body: req.clientIp})); " &
+    "const res = await http.get('http://127.0.0.1:18115/'); " &
+    "http.close(srv.port); " &
+    "return res.body; })()") == "127.0.0.1"
+
+test "serve takes tuning opts":
+  check runCode(preamble &
+    "const a = http.serve(18116, {keepAliveMs: 1000}, " &
+    "req => ({body: 'a'})); " &
+    "const b = http.serve(18117, '127.0.0.1', " &
+    "{readTimeoutMs: 5000, maxBodySize: 1048576}, " &
+    "req => ({body: 'b'})); " &
+    "const ra = await http.get('http://127.0.0.1:18116/'); " &
+    "const rb = await http.get('http://127.0.0.1:18117/'); " &
+    "http.close(a.port); http.close(b.port); " &
+    "return ra.body + rb.body; })()") == "ab"
+
+test "serve rejects bad opts":
+  expect CarneError:
+    discard runCode(preamble &
+      "http.serve(18118, {keepAliveMs: 'soon'}, () => ({})); })()")
+  expect CarneError:
+    discard runCode(preamble &
+      "http.serve(18118, {maxBodySize: -5}, () => ({})); })()")
+  expect CarneError:
+    discard runCode(preamble &
+      "http.serve(18118, '127.0.0.1', 42, () => ({})); })()")
+  expect CarneError:
+    discard runCode(preamble &
+      "await http.delete('http://127.0.0.1:18118/', " &
+      "{method: 'POST'}); })()")

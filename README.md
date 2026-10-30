@@ -486,10 +486,15 @@ http.close(srv.port);
 ```
 
 `fetch(url[, {method, headers, body, timeoutMs}])` returns
-`{status, statusText, headers, body}`. Handlers return a string, a
-`{status?, headers?, body?}` object, or `undefined`; handler throws
-become 500s. Client and server multiplex on one event loop with the
-timers, truly async, no threads.
+`{status, statusText, headers, body}`; `get`/`delete`/`head`/`options`
+take `(url[, opts])`, `post`/`put`/`patch` take `(url, body[, opts])`.
+Requests carry `{method, path, query, url, headers, body, clientIp}`.
+Handlers return a string, a `{status?, headers?, body?}` object, or
+`undefined`; handler throws become 500s. HEAD requests and
+101/204/205/304 statuses answer with an empty body.
+`serve(port[, host][, opts], handler)` accepts
+`{keepAliveMs?, readTimeoutMs?, maxBodySize?}`. Client and server
+multiplex on one event loop with the timers, truly async, no threads.
 
 ### `std/ws`
 
@@ -521,13 +526,20 @@ c2.send("sync");
 c2.close();
 ```
 
-`connect(url[, handlers])` returns a Promise for the `{send, close}`
-handle (`await ws.connect(...)` or `.then(...)`); `connectSync(url[,
-{timeoutMs, ...handlers}])` pumps the same loop until open (default 10s).
-Server callbacks get `(conn, payload)`, client callbacks just `(payload)`;
-messages are `{data, isBinary}`, closes `{code, reason}`, errors
-`{message}`. Handshake failures reject the promise (an `onError` handler
-fires too when given). `ws://` only in v1, no TLS yet.
+`connect(url[, opts])` returns a Promise for the
+`{send, ping, protocol, close}` handle (`await ws.connect(...)` or
+`.then(...)`); `connectSync(url[, opts])` pumps the same loop until
+open (default 10s). `opts` carries `{headers?, protocols?,
+timeoutMs?, pingIntervalMs?, idleTimeoutMs?, maxFrameSize?}` alongside
+the handlers. `send(text[, {binary}])` delivers binary frames as
+strings with `isBinary: true`; `ping([data])` sends a control ping;
+`protocol()` returns the negotiated subprotocol (`""` when none).
+Server callbacks get `(conn, payload)`, client callbacks just
+`(payload)`; messages are `{data, isBinary}`, closes `{code, reason}`,
+errors `{message}`. Handshake failures reject the promise (an `onError`
+handler fires too when given). `wss://` clients use a shared TLS
+context with system CAs; serving `wss://` needs cert loading and is
+out of scope in v1.
 
 ## Roadmap
 - [x] JSC runtime: console/process/require/timers CLI
@@ -535,8 +547,8 @@ fires too when given). `ws://` only in v1, no TLS yet.
 - [x] Format std libs (yaml, toml, ical, dotenv, plist, bson, csv, xml, vcard, feed)
 - [x] `std/sql`, `std/crypto`, `std/path`, `std/colors`
 - [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/mimetype`, `std/benchmark`, `std/qr`, `std/svg`
-- [x] `std/http` (async client + server) + top-level promise unwrap in `runCode`
-- [x] `std/ws` (async + sync client, server, no TLS)
+- [x] `std/http` (async client + server, tuning opts, method helpers) + top-level promise unwrap in `runCode`
+- [x] `std/ws` (async + sync client, server, binary/ping/protocol, `wss://` client)
 - [x] Lazy startup (deferred event loop, per-run TLS, cached spec data)
 - [x] Benchmark suite + results
 - [ ] Top-level await in scripts (currently needs an async IIFE)

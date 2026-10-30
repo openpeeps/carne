@@ -97,14 +97,83 @@ test "connect promise rejects on refused port":
     "catch (e) { return 'rejected:' + (e.message.length > 0); } })();") ==
     "rejected:true"
 
-test "wss URLs are rejected":
+test "wss handshake failure rejects instead of throwing at parse":
+  check runCode(
+    "const ws = require('std/ws'); " &
+    "(async () => { " &
+    "try { await ws.connect('wss://127.0.0.1:18996/'); " &
+    "return 'resolved?!'; } " &
+    "catch (e) { return 'rejected:' + (e.message.length > 0); } })();") ==
+    "rejected:true"
   expect CarneError:
     discard runCode(
-      "(async () => { await require('std/ws')" &
-      ".connect('wss://example.com/chat'); })();")
+      "require('std/ws').connectSync('wss://127.0.0.1:18997/', " &
+      "{timeoutMs: 2000});")
+
+test "binary send roundtrip keeps flags":
+  check runCode(
+    "const ws = require('std/ws'); " &
+    "const srv = ws.serve(18211, {onMessage: (c, m) => " &
+    "c.send('bin:' + m.data + ':' + m.isBinary)}); " &
+    "let done; " &
+    "const p = new Promise((r) => { done = r; }); " &
+    "const c = ws.connectSync('ws://127.0.0.1:18211/', " &
+    "{onMessage: (m) => { c.close(); ws.close(srv.port); " &
+    "done(m.data + ':' + m.isBinary); }}); " &
+    "c.send('hi', {binary: true}); " &
+    "p") == "bin:hi:true:false"
+
+test "ping and protocol on an open conn":
+  check runCode(
+    "const ws = require('std/ws'); " &
+    "const srv = ws.serve(18212, {onMessage: (c, m) => " &
+    "c.send('echo:' + m.data)}); " &
+    "let done; " &
+    "const p = new Promise((r) => { done = r; }); " &
+    "let info = ''; " &
+    "const c = ws.connectSync('ws://127.0.0.1:18212/', " &
+    "{onMessage: (m) => { c.close(); ws.close(srv.port); " &
+    "done(info + '|' + m.data); }}); " &
+    "info = typeof c.ping + ':' + typeof c.protocol + ':' + " &
+    "c.protocol() + ':' + c.ping('x') + ':' + c.ping(); " &
+    "c.send('still-open'); " &
+    "p") == "function:function::true:true|echo:still-open"
+
+test "connect forwards handshake opts":
+  check runCode(
+    "const ws = require('std/ws'); " &
+    "const srv = ws.serve(18213, {onMessage: (c, m) => " &
+    "c.send('hi ' + m.data)}); " &
+    "let done; " &
+    "const p = new Promise((r) => { done = r; }); " &
+    "(async () => { " &
+    "const c = await ws.connect('ws://127.0.0.1:18213/', { " &
+    "headers: {'X-Test': 'yes'}, protocols: ['chat'], timeoutMs: 5000, " &
+    "pingIntervalMs: 0, idleTimeoutMs: 0, maxFrameSize: 1048576, " &
+    "onMessage: (m) => { const pr = c.protocol(); c.close(); " &
+    "ws.close(srv.port); done(pr + ':' + m.data); }}); " &
+    "c.send('ada'); })(); " &
+    "p") == ":hi ada"
+
+test "connect and send validate the new opts":
   expect CarneError:
     discard runCode(
-      "require('std/ws').connectSync('wss://example.com/chat');")
+      "require('std/ws').connectSync('ws://127.0.0.1:18214/', " &
+      "{protocols: 'chat'});")
+  expect CarneError:
+    discard runCode(
+      "require('std/ws').connectSync('ws://127.0.0.1:18214/', " &
+      "{headers: 42});")
+  expect CarneError:
+    discard runCode(
+      "require('std/ws').connectSync('ws://127.0.0.1:18214/', " &
+      "{maxFrameSize: -1});")
+  expect CarneError:
+    discard runCode(
+      "const ws = require('std/ws'); " &
+      "const srv = ws.serve(18214, {}); " &
+      "const c = ws.connectSync('ws://127.0.0.1:18214/'); " &
+      "c.send('x', {binary: 42});")
 
 test "serve validates port and handlers":
   expect CarneError:
