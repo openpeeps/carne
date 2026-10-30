@@ -490,7 +490,12 @@ http.close(srv.port);
 take `(url[, opts])`, `post`/`put`/`patch` take `(url, body[, opts])`.
 Requests carry `{method, path, query, url, headers, body, clientIp}`.
 Handlers return a string, a `{status?, headers?, body?}` object, or
-`undefined`; handler throws become 500s. HEAD requests and
+`undefined`; handler throws become 500s. The object form defaults
+`Content-Type` to `text/plain` for string bodies and
+`application/json` for serialized ones unless `headers` sets one.
+Header names are lowercased in `req.headers` and `res.headers` (read
+them lowercase); handler-set response headers keep their case on the
+wire. HEAD requests and
 101/204/205/304 statuses answer with an empty body.
 `serve(port[, host][, opts], handler)` accepts
 `{keepAliveMs?, readTimeoutMs?, maxBodySize?}`. Client and server
@@ -586,6 +591,21 @@ startup-dominated (JSC context + stdlib install), not compute. Node crashes
 `tail_recursive` (no proper tail calls: stack overflow at 10k frames);
 carne inherits JSC's tail-call support, like bun.
 
+### HTTP hello-world (`wrk`)
+
+Throughput bench (`bench/http-hello`, `bench/http-hello/run.sh` reproduces;
+wrk 4.2.0, `wrk -t4 -c100 -d10s` after a 2s warmup, port 3000, macOS,
+node v22.22.1, bun 1.4.4). Each server answers `200 text/plain
+"hello world"` to every request:
+
+| Runtime | Requests/sec | Avg latency |
+|---------|--------------|-------------|
+| carne | 96287.79 | 1.03ms |
+| node | 37236.49 | 2.79ms |
+| bun | 81649.88 | 1.23ms |
+
+Bodies are byte-identical (11 bytes); headers differ per runtime, so
+`Transfer/sec` is not directly comparable.
 
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/carne/issues)

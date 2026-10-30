@@ -13,14 +13,23 @@
 # loop together with timers and serve sockets: truly async, no threads.
 # serve borrows the loop and holds it alive until close (Node semantics).
 # Handler return: string -> 200 text/plain; {status?, headers?, body?};
-# undefined/null -> 200 empty; anything else -> JSON body. A JS throw in
-# a handler answers 500 and is recorded as uncaught. Bodies are UTF-8
-# strings in v1; https uses a default client context with system CAs.
+# undefined/null -> 200 empty; anything else -> JSON body. The object
+# form defaults Content-Type to text/plain for string bodies and
+# application/json for serialized ones unless headers sets one. A JS
+# throw in a handler answers 500 and is recorded as uncaught. Bodies
+# are UTF-8 strings in v1; https uses a default client context with
+# system CAs. Header names are lowercased in req.headers and
+# res.headers (read them lowercase); handler-set response headers keep
+# their case on the wire.
 # HEAD requests and 101/204/205/304 statuses answer with an empty body
 # (fetch null-body-status semantics). The request object carries
 # {method, path, query, url, headers, body, clientIp}.
 # serve takes tuning opts: serve(port[, host][, opts], handler) with
-# opts = {keepAliveMs?, readTimeoutMs?, maxBodySize?}.
+# opts = {keepAliveMs?, readTimeoutMs?, maxBodySize?}. The request
+# object is lazy: fields convert on first access, so handlers that
+# ignore it pay ~nothing. Fields read during the handler stay valid;
+# fields first read after the handler returns answer "" ({} for
+# headers). Assignments to req fields stick.
 #
 # Note: scripts need an async IIFE for await (top-level await is out of
 # scope in v1): `(async () => { ... })()`. The runtime unwraps a
@@ -176,21 +185,175 @@ proc responseToJson(res: HttpClientResponse): JsonNode =
   result["headers"] = hdrs
   result["body"] = %res.getBodyString()
 
-proc reqToJson(req: HttpRequest; clientIp: string): JsonNode =
-  result = newJObject()
-  result["method"] = %methodToString(req.getMethod())
-  let p: string = req.getPath()
-  let q: string = req.getQuery()
-  let u: string = req.getUrl()
-  result["path"] = %p
-  result["query"] = %q
-  result["url"] = %u
-  result["clientIp"] = %clientIp
-  var hdrs = newJObject()
-  for k, v in req.getHeaders().pairs:
-    hdrs[k] = %v
-  result["headers"] = hdrs
-  result["body"] = %req.getBodyString()
+# Lazy request objects: the handler gets a JSClass instance whose fields
+# convert on first access instead of an eagerly snapshotted object, so a
+# handler that ignores the request pays ~nothing for it. First access
+# during the handler snapshots the value (later reads stay valid
+# forever); fields never accessed read as "" ({} for headers) once the
+# handler has returned and the pooled powpow request is recycled.
+# Assignments stick via a JsonNode override snapshot. Enumeration
+# (Object.keys, spread, JSON.stringify) sees the same seven fields.
+
+type
+  ReqField = enum
+    rfMethod, rfPath, rfQuery, rfUrl, rfHeaders, rfBody, rfClientIp
+
+const reqFieldNames: array[ReqField, string] = ["method", "path", "query",
+  "url", "headers", "body", "clientIp"]
+
+type
+  ReqState = ref object
+    req: HttpRequest
+    res: HttpResponse
+    alive: bool
+    ctx: JSContextRef
+    strs: array[ReqField, string]
+    headers: seq[(string, string)]
+    have: set[ReqField]
+    over: array[ReqField, JsonNode]
+    haveOver: set[ReqField]
+
+var reqClass: JSClassRef = nil
+var reqStates: Table[pointer, ReqState]
+  ## Roots ReqState while its JS object lives (removed in finalize).
+  ## Same-thread assumption as the rest of the runtime: all JS and
+  ## loop work happens on the run's single thread.
+var lastSrvKey: pointer = nil
+var lastSrv: ServerEntry
+var lastSrvValid = false
+  ## One-entry fast path: benchmarks serve on a single server.
+
+proc snap(s: string): string =
+  ## Unconditional byte copy: powpow yields borrowed (`lent`) strings over
+  ## pooled parser buffers, so aliasing them past the request is unsafe.
+  result = newString(s.len)
+  if s.len > 0:
+    copyMem(addr result[0], unsafeAddr s[0], s.len)
+
+proc fieldOf(name: JSStringRef): int =
+  for i in ReqField:
+    if JSStringIsEqualToUTF8CString(name, cstring(reqFieldNames[i])):
+      return ord(i)
+  -1
+
+proc stateOf(obj: JSObjectRef): ReqState =
+  let p = JSObjectGetPrivate(obj)
+  if p == nil:
+    return nil
+  cast[ReqState](p)
+
+proc buildHeadersObj(ctx: JSContextRef; pairs: seq[(string, string)]): JSValueRef =
+  result = newObject(ctx)
+  if result == nil:
+    return nil
+  var ex: JSValueRef = nil
+  for (k, v) in pairs:
+    setProp(ctx, result, k, toJS(ctx, v), addr ex)
+    if ex != nil:
+      return nil
+
+proc reqConvert(st: ReqState; f: ReqField): JSValueRef =
+  ## Fresh JS value for field f, snapshotting live data on first access.
+  ## nil when the value is unavailable (caller yields undefined).
+  if f in st.haveOver:
+    return jsonToJS(st.ctx, st.over[f])
+  case f
+  of rfMethod, rfPath, rfQuery, rfUrl, rfBody, rfClientIp:
+    if f in st.have:
+      return toJS(st.ctx, st.strs[f])
+    if not st.alive:
+      return toJS(st.ctx, "")
+    case f
+    of rfMethod: st.strs[f] = methodToString(st.req.getMethod())
+    of rfPath: st.strs[f] = snap(st.req.getPath())
+    of rfQuery: st.strs[f] = snap(st.req.getQuery())
+    of rfUrl: st.strs[f] = snap(st.req.getUrl())
+    of rfBody: st.strs[f] = snap(st.req.getBodyString())
+    of rfClientIp:
+      try:
+        st.strs[f] = snap(st.res.getClientIp())
+      except CatchableError:
+        st.strs[f] = ""
+    else: discard
+    st.have.incl(f)
+    return toJS(st.ctx, st.strs[f])
+  of rfHeaders:
+    if f in st.have:
+      return buildHeadersObj(st.ctx, st.headers)
+    if not st.alive:
+      return newObject(st.ctx)
+    st.headers.setLen(0)
+    for k, v in st.req.getHeaders().pairs:
+      st.headers.add((snap(k), snap(v)))
+    st.have.incl(f)
+    return buildHeadersObj(st.ctx, st.headers)
+
+proc reqHasProperty(ctx: JSContextRef; obj: JSObjectRef;
+    name: JSStringRef): bool {.cdecl.} =
+  fieldOf(name) >= 0
+
+proc reqGetProperty(ctx: JSContextRef; obj: JSObjectRef; name: JSStringRef;
+    exception: ptr JSValueRef): JSValueRef {.cdecl.} =
+  let idx = fieldOf(name)
+  if idx < 0:
+    return nil
+  let st = stateOf(obj)
+  if st == nil:
+    return nil
+  reqConvert(st, ReqField(idx))
+
+proc reqSetProperty(ctx: JSContextRef; obj: JSObjectRef; name: JSStringRef;
+    value: JSValueRef; exception: ptr JSValueRef): bool {.cdecl.} =
+  let idx = fieldOf(name)
+  if idx < 0:
+    return false
+  let st = stateOf(obj)
+  if st == nil:
+    return false
+  var jerr = ""
+  let node = jsToJson(ctx, value, jerr)
+  if node == nil:
+    return false
+  st.over[ReqField(idx)] = node
+  st.haveOver.incl(ReqField(idx))
+  true
+
+proc reqGetPropertyNames(ctx: JSContextRef; obj: JSObjectRef;
+    acc: JSPropertyNameAccumulatorRef) {.cdecl.} =
+  for n in reqFieldNames:
+    let js = newJSString(n)
+    JSPropertyNameAccumulatorAddName(acc, js)
+    JSStringRelease(js)
+
+proc reqFinalize(obj: JSObjectRef) {.cdecl.} =
+  reqStates.del(cast[pointer](obj))
+
+proc ensureReqClass() =
+  if reqClass != nil:
+    return
+  var def = kJSClassDefinitionEmpty
+  def.className = "CarneHttpReq"
+  def.hasProperty = reqHasProperty
+  def.getProperty = reqGetProperty
+  def.setProperty = reqSetProperty
+  def.getPropertyNames = reqGetPropertyNames
+  def.finalize = reqFinalize
+  reqClass = JSClassCreate(addr def)
+
+proc makeLazyReq(ctx: JSContextRef; req: HttpRequest;
+    res: HttpResponse): JSValueRef =
+  ## One class instance borrowing req/res; fields snapshot on first
+  ## access. nil on allocation failure.
+  ensureReqClass()
+  if reqClass == nil:
+    return nil
+  let st = ReqState(req: req, res: res, alive: true, ctx: ctx)
+  result = JSObjectMake(ctx, reqClass, nil)
+  if result == nil:
+    return nil
+  if not JSObjectSetPrivate(result, cast[pointer](st)):
+    return nil
+  reqStates[cast[pointer](result)] = st
 
 proc startFetch(ctx: JSContextRef; rt: Runtime; url: string; opts: FetchOpts;
     name: string; exception: ptr JSValueRef): JSValueRef =
@@ -275,23 +438,33 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
   ## table, which no other thread touches.
   {.cast(gcsafe).}:
     let srvKey = cast[pointer](res.server)
-    if not httpServers.hasKey(srvKey):
-      res.sendError(Http500, "server closed")
-      return
-    let e = httpServers[srvKey]
+    var e: ServerEntry
+    if lastSrvValid and srvKey == lastSrvKey:
+      e = lastSrv
+    else:
+      if not httpServers.hasKey(srvKey):
+        res.sendError(Http500, "server closed")
+        return
+      e = httpServers[srvKey]
+      lastSrvKey = srvKey
+      lastSrv = e
+      lastSrvValid = true
     let c = e.ctx
     let headOnly = req.getMethod() == HttpHead
-    var clientIp = ""
-    try:
-      clientIp = res.getClientIp()
-    except CatchableError:
-      clientIp = ""
-    let reqVal = jsonToJS(c, reqToJson(req, clientIp))
+    let reqVal = makeLazyReq(c, req, res)
+    if reqVal == nil:
+      res.sendError(Http500, "out of memory")
+      return
+    let st = stateOf(reqVal)
     var ex: JSValueRef = nil
     var argv: array[1, JSValueRef]
     argv[0] = reqVal
     let ret = JSObjectCallAsFunction(c, e.handlerFn, nil, 1, addr argv[0],
       addr ex)
+    # The handler ran: the pooled req/res recycle from here, so fields
+    # never read above now answer as defaults (documented).
+    if st != nil:
+      st.alive = false
     if ex != nil or ret == nil:
       if e.rt.uncaught.len == 0:
         e.rt.uncaught =
@@ -335,6 +508,7 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
           return
         hdrs.add((k, v.getStr()))
     var body = ""
+    var bodyIsJson = false
     if node.hasKey("body"):
       let b = node["body"]
       if b.kind == JString:
@@ -343,9 +517,22 @@ proc httpOnRequest(req: HttpRequest; res: HttpResponse) {.gcsafe.} =
         body = ""
       else:
         body = $b
+        bodyIsJson = true
     # Null-body statuses (fetch semantics) and HEAD never carry a body.
     if headOnly or code in {Http101, Http204, Http205, Http304}:
       body = ""
+      bodyIsJson = false
+    # The object form defaults Content-Type like the other return paths
+    # (string -> text/plain, JSON -> application/json) unless the
+    # handler set one explicitly (matched case-insensitively).
+    var hasContentType = false
+    for (k, v) in hdrs:
+      if k.toLowerAscii() == "content-type":
+        hasContentType = true
+        break
+    if not hasContentType and body.len > 0:
+      hdrs.add(("Content-Type",
+        if bodyIsJson: "application/json" else: "text/plain; charset=utf-8"))
     res.status(code)
     for (k, v) in hdrs:
       res.header(k, v)
@@ -393,6 +580,7 @@ proc closeServerEntry(srv: HttpServer; e: ServerEntry) =
   srv.close()
   JSValueUnprotect(e.ctx, e.handlerFn)
   httpServers.del(cast[pointer](srv))
+  lastSrvValid = false
   decPending(e.rt)
 
 proc closeAllServers*() =

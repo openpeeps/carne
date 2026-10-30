@@ -181,3 +181,20 @@ test "serve rejects bad opts":
     discard runCode(preamble &
       "await http.delete('http://127.0.0.1:18118/', " &
       "{method: 'POST'}); })()")
+
+test "object return defaults content-type":
+  check runCode(preamble &
+    "const srv = http.serve(18119, req => " &
+    "req.path === '/t' ? {body: 'hi'} : " &
+    "req.path === '/j' ? {body: 42} : " &
+    "req.path === '/e' ? {headers: {'Content-Type': 'text/csv'}, " &
+    "body: 'a,b'} : {status: 204, body: 'x'}); " &
+    "const t = await http.get('http://127.0.0.1:18119/t'); " &
+    "const j = await http.get('http://127.0.0.1:18119/j'); " &
+    "const e = await http.get('http://127.0.0.1:18119/e'); " &
+    "const n = await http.get('http://127.0.0.1:18119/gone'); " &
+    "http.close(srv.port); " &
+    "return t.headers['content-type'] + '|' + j.headers['content-type'] + " &
+    "'|' + e.headers['content-type'] + '|' + " &
+    "String(n.headers['content-type']); })()") ==
+    "text/plain; charset=utf-8|application/json|text/csv|undefined"
