@@ -13,11 +13,42 @@
 // strings and named colors. Internally colors are sRGB 0..1 floats;
 // the boundary converts to/from {r, g, b, a}.
 "use strict";
+/*
+ * @typedef {object} Rgb01 - Internal color with r/g/b/a as 0..1 floats.
+ * @typedef {object} Rgba255 - Boundary color: r/g/b are 0..255 integers, a is 0..1.
+ */
 
+/*
+ * Clamps v into [lo, hi].
+ * @param {number} v - Value.
+ * @param {number} lo - Lower bound.
+ * @param {number} hi - Upper bound.
+ * @returns {number} Clamped value.
+ */
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+/*
+ * Clamps v into [0, 1].
+ * @param {number} v - Value.
+ * @returns {number} Clamped value.
+ */
 function clamp01(v) { return clamp(v, 0, 1); }
+/*
+ * Wraps degrees into [0, 360).
+ * @param {number} h - Hue in degrees.
+ * @returns {number} Wrapped hue.
+ */
 function hueMod(h) { return ((h % 360) + 360) % 360; }
+/*
+ * Degrees to radians.
+ * @param {number} d - Degrees.
+ * @returns {number} Radians.
+ */
 function degToRad(d) { return d * Math.PI / 180; }
+/*
+ * Radians to degrees.
+ * @param {number} r - Radians.
+ * @returns {number} Degrees.
+ */
 function radToDeg(r) { return r * 180 / Math.PI; }
 
 // D65 reference white + conversion matrices (same constants as before).
@@ -40,6 +71,11 @@ var OklabM1Inv = [
 
 // -- argument validation (same throw shapes as the typed surface) -------
 
+/*
+ * JS typeof name for type-mismatch errors (null/array distinguished).
+ * @param {any} v - Value to classify.
+ * @returns {string} The JS type name.
+ */
 function jsKind(v) {
   if (v === null) return "null";
   if (Array.isArray(v)) return "array";
@@ -50,6 +86,13 @@ function jsKind(v) {
   return "object";
 }
 
+/*
+ * Strict string check; throws a type-mismatch Error otherwise.
+ * @param {any} v - Candidate value.
+ * @param {string} fname - Calling function name for the error.
+ * @param {string} pname - Parameter name for the error.
+ * @returns {string} v unchanged.
+ */
 function needString(v, fname, pname) {
   if (typeof v !== "string") {
     throw new Error(fname + ": type mismatch parameter: `" + pname +
@@ -58,6 +101,13 @@ function needString(v, fname, pname) {
   return v;
 }
 
+/*
+ * Strict number check; throws a type-mismatch Error otherwise.
+ * @param {any} v - Candidate value.
+ * @param {string} fname - Calling function name for the error.
+ * @param {string} pname - Parameter name for the error.
+ * @returns {number} v unchanged.
+ */
 function needNumber(v, fname, pname) {
   if (typeof v !== "number") {
     throw new Error(fname + ": type mismatch parameter: `" + pname +
@@ -66,6 +116,12 @@ function needNumber(v, fname, pname) {
   return v;
 }
 
+/*
+ * Reads a {r, g, b, a?} boundary object into 0..1 floats (a defaults to 1). Throws on missing, non-numeric, or out-of-range fields.
+ * @param {object} v - Boundary color object.
+ * @param {string} fname - Calling function name for the error.
+ * @returns {Rgb01} Internal color.
+ */
 function needColor(v, fname) {
   if (typeof v !== "object" || v === null || Array.isArray(v)) {
     throw new Error(fname + ": color must be an {r, g, b, a?} object");
@@ -88,6 +144,11 @@ function needColor(v, fname) {
   return {r: r, g: g, b: b, a: a};
 }
 
+/*
+ * Internal 0..1 color to the boundary {r, g, b, a} shape (r/g/b rounded 0..255).
+ * @param {Rgb01} c - Internal color.
+ * @returns {Rgba255} Boundary color.
+ */
 function toOut(c) {
   return {
     r: Math.round(clamp01(c.r) * 255),
@@ -99,6 +160,13 @@ function toOut(c) {
 
 // -- convert -------------------------------------------------------------
 
+/*
+ * Helper for fromHsl: interpolates one sRGB channel.
+ * @param {number} p - Lower bound.
+ * @param {number} q - Upper bound.
+ * @param {number} t - Position.
+ * @returns {number} Channel value 0..1.
+ */
 function hue2rgb(p, q, t) {
   if (t < 0) t += 1;
   if (t > 1) t -= 1;
@@ -108,6 +176,11 @@ function hue2rgb(p, q, t) {
   return p;
 }
 
+/*
+ * sRGB 0..1 to {h 0..360, s/l/a 0..1}.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} HSL record.
+ */
 function rgbToHsl(c) {
   var r = c.r, g = c.g, b = c.b;
   var maxc = Math.max(r, Math.max(g, b));
@@ -125,6 +198,11 @@ function rgbToHsl(c) {
   return {h: hueMod(h * 360), s: clamp01(s), l: clamp01(l), a: c.a};
 }
 
+/*
+ * HSL to sRGB 0..1.
+ * @param {object} hsl - {h 0..360, s/l/a 0..1}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromHsl(hsl) {
   var h = hueMod(hsl.h) / 360;
   var s = clamp01(hsl.s), l = clamp01(hsl.l);
@@ -141,6 +219,11 @@ function fromHsl(hsl) {
   return {r: clamp01(r), g: clamp01(g), b: clamp01(b), a: clamp01(hsl.a)};
 }
 
+/*
+ * sRGB 0..1 to {h 0..360, s/v/a 0..1}.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} HSV record.
+ */
 function toHsv(c) {
   var r = c.r, g = c.g, b = c.b;
   var maxc = Math.max(r, Math.max(g, b));
@@ -158,6 +241,11 @@ function toHsv(c) {
   return {h: hueMod(h * 360), s: clamp01(s), v: clamp01(v), a: c.a};
 }
 
+/*
+ * HSV to sRGB 0..1.
+ * @param {object} hsv - {h, s, v, a}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromHsv(hsv) {
   var h = hueMod(hsv.h) / 360;
   var s = clamp01(hsv.s), v = clamp01(hsv.v);
@@ -178,6 +266,11 @@ function fromHsv(hsv) {
   return {r: clamp01(r), g: clamp01(g), b: clamp01(b), a: clamp01(hsv.a)};
 }
 
+/*
+ * sRGB 0..1 to {h, w/b 0..1, a} via HSV.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} HWB record.
+ */
 function toHwb(c) {
   var hsv = toHsv(c);
   var w = (1 - hsv.s) * hsv.v;
@@ -185,6 +278,11 @@ function toHwb(c) {
   return {h: hsv.h, w: clamp01(w), b: clamp01(b), a: c.a};
 }
 
+/*
+ * HWB to sRGB 0..1 (flat gray when w + b >= 1).
+ * @param {object} hwb - {h, w, b, a}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromHwb(hwb) {
   var h = hueMod(hwb.h);
   var w = clamp01(hwb.w), bv = clamp01(hwb.b);
@@ -197,6 +295,11 @@ function fromHwb(hwb) {
   return fromHsv({h: h, s: clamp01(s), v: clamp01(v), a: hwb.a});
 }
 
+/*
+ * sRGB 0..1 to {c/m/y/k/a 0..1}.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} CMYK record.
+ */
 function toCmyk(c) {
   var r = c.r, g = c.g, b = c.b;
   var k = 1 - Math.max(r, Math.max(g, b));
@@ -208,6 +311,11 @@ function toCmyk(c) {
   };
 }
 
+/*
+ * CMYK to sRGB 0..1.
+ * @param {object} cmyk - {c, m, y, k, a}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromCmyk(cmyk) {
   var cc = clamp01(cmyk.c), m = clamp01(cmyk.m);
   var y = clamp01(cmyk.y), k = clamp01(cmyk.k);
@@ -217,7 +325,17 @@ function fromCmyk(cmyk) {
   };
 }
 
+/*
+ * sRGB 0..1 to CIE Lab (D65).
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} Lab record.
+ */
 function toLab(c) {
+/*
+ * Linearizes one sRGB channel.
+ * @param {number} v - Channel 0..1.
+ * @returns {number} Linear value.
+ */
   function lin(v) {
     return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   }
@@ -225,6 +343,11 @@ function toLab(c) {
   var x = (rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375) * 100;
   var y = (rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750) * 100;
   var z = (rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041) * 100;
+/*
+ * Lab f(t) nonlinearity.
+ * @param {number} t - Normalized tristimulus.
+ * @returns {number} f(t).
+ */
   function f(t) {
     return t > 0.008856 ? Math.pow(t, 1 / 3) : 7.787 * t + 16 / 116;
   }
@@ -233,7 +356,17 @@ function toLab(c) {
     alpha: c.a};
 }
 
+/*
+ * CIE Lab to sRGB 0..1.
+ * @param {object} lab - {l, a, b, alpha}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromLab(lab) {
+/*
+ * Inverse Lab f(t).
+ * @param {number} t - f value.
+ * @returns {number} Tristimulus.
+ */
   function finv(t) {
     var t3 = t * t * t;
     return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787;
@@ -246,6 +379,11 @@ function fromLab(lab) {
   var rl = xn * 3.2404542 + yn * (-1.5371385) + zn * (-0.4985314);
   var gl = xn * (-0.9692660) + yn * 1.8760108 + zn * 0.0415560;
   var bl = xn * 0.0556434 + yn * (-0.2040259) + zn * 1.0572252;
+/*
+ * De-linearizes one channel back to sRGB.
+ * @param {number} v - Linear value.
+ * @returns {number} Channel 0..1.
+ */
   function delin(v) {
     return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
   }
@@ -255,6 +393,11 @@ function fromLab(lab) {
   };
 }
 
+/*
+ * sRGB 0..1 to CIE LCh.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} LCh record.
+ */
 function toLch(c) {
   var lab = toLab(c);
   var ch = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
@@ -262,13 +405,28 @@ function toLch(c) {
     alpha: lab.alpha};
 }
 
+/*
+ * CIE LCh to sRGB 0..1 via Lab.
+ * @param {object} lch - {l, c, h, alpha}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromLch(lch) {
   var a = lch.c * Math.cos(degToRad(lch.h));
   var b = lch.c * Math.sin(degToRad(lch.h));
   return fromLab({l: lch.l, a: a, b: b, alpha: lch.alpha});
 }
 
+/*
+ * sRGB 0..1 to Oklab.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} Oklab record.
+ */
 function toOklab(c) {
+/*
+ * Linearizes one sRGB channel.
+ * @param {number} v - Channel 0..1.
+ * @returns {number} Linear value.
+ */
   function lin(v) {
     return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   }
@@ -285,6 +443,11 @@ function toOklab(c) {
   };
 }
 
+/*
+ * Oklab to sRGB 0..1.
+ * @param {object} ok - {l, a, b, alpha}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromOklab(ok) {
   var l1 = ok.l + ok.a * 0.3963377774 + ok.b * 0.2158037573;
   var m1 = ok.l + ok.a * (-0.1055613458) + ok.b * (-0.0638541728);
@@ -296,6 +459,11 @@ function fromOklab(ok) {
     OklabM1Inv[1][2] * s1;
   var bl = OklabM1Inv[2][0] * l1 + OklabM1Inv[2][1] * m1 +
     OklabM1Inv[2][2] * s1;
+/*
+ * De-linearizes one channel back to sRGB.
+ * @param {number} v - Linear value.
+ * @returns {number} Channel 0..1.
+ */
   function delin(v) {
     return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
   }
@@ -305,6 +473,11 @@ function fromOklab(ok) {
   };
 }
 
+/*
+ * sRGB 0..1 to Oklch.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} Oklch record.
+ */
 function toOklch(c) {
   var lab = toOklab(c);
   var ch = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
@@ -312,6 +485,11 @@ function toOklch(c) {
     alpha: lab.alpha};
 }
 
+/*
+ * Oklch to sRGB 0..1 via Oklab.
+ * @param {object} oklch - {l, c, h, alpha}.
+ * @returns {Rgb01} Internal color.
+ */
 function fromOklchToColor(oklch) {
   var a = oklch.c * Math.cos(degToRad(oklch.h));
   var b = oklch.c * Math.sin(degToRad(oklch.h));
@@ -320,19 +498,40 @@ function fromOklchToColor(oklch) {
 
 // -- parse ---------------------------------------------------------------
 
+/*
+ * Throws a parse Error with the std prefix.
+ * @param {string} msg - Reason.
+ * @returns {never} Always throws.
+ */
 function perr(msg) { throw new Error("parse: " + msg); }
 
+/*
+ * parseFloat that throws a parse Error on NaN.
+ * @param {string} t - Text to parse.
+ * @param {string|undefined} what - Optional message override.
+ * @returns {number} Parsed value.
+ */
 function num(t, what) {
   var v = parseFloat(t);
   if (Number.isNaN(v)) perr(what || ("invalid number: " + t));
   return v;
 }
 
+/*
+ * ASCII hex-digit test.
+ * @param {string} ch - Single character.
+ * @returns {boolean} True for 0-9/a-f/A-F.
+ */
 function isHexDigit(ch) {
   return (ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f") ||
     (ch >= "A" && ch <= "F");
 }
 
+/*
+ * Parses 3/4/6/8-digit hex (leading # optional) to 0..1.
+ * @param {string} s - Hex text.
+ * @returns {Rgb01} Internal color.
+ */
 function parseHexColor(s) {
   var hex = String(s).trim();
   if (hex.length === 0) perr("empty color");
@@ -340,7 +539,18 @@ function parseHexColor(s) {
   for (var i = 0; i < hex.length; i++) {
     if (!isHexDigit(hex[i])) perr("invalid hex color: " + s);
   }
+  /*
+   * Two hex digits to a byte.
+   * @param {number} a - First index.
+   * @param {number} b - Second index.
+   * @returns {number} 0..255.
+   */
   function hb(a, b) { return parseInt(hex[a] + hex[b], 16); }
+  /*
+   * One hex digit duplicated to a byte (e.g. F -> FF).
+   * @param {number} a - Index.
+   * @returns {number} 0..255.
+   */
   function hn(a) { var v = parseInt(hex[a], 16); return v * 16 + v; }
   if (hex.length === 3) {
     return {r: hn(0) / 255, g: hn(1) / 255, b: hn(2) / 255, a: 1};
@@ -357,6 +567,11 @@ function parseHexColor(s) {
   perr("invalid hex length: " + s);
 }
 
+/*
+ * True when the string is shaped like hex (valid length + digits).
+ * @param {string} s - Candidate text.
+ * @returns {boolean} Hex-shaped or not.
+ */
 function looksLikeHex(s) {
   var h = String(s).trim();
   if (h.length === 0) return false;
@@ -370,12 +585,22 @@ function looksLikeHex(s) {
   return true;
 }
 
+/*
+ * Lowercased function name before the first paren.
+ * @param {string} s - Functional notation.
+ * @returns {string} Name or "" when absent.
+ */
 function extractFuncName(s) {
   var idx = s.indexOf("(");
   if (idx < 0) return "";
   return s.slice(0, idx).trim().toLowerCase();
 }
 
+/*
+ * Text between the first ( and the last ).
+ * @param {string} s - Functional notation.
+ * @returns {string} Inner text.
+ */
 function extractInside(s) {
   var a = s.indexOf("(");
   var b = s.lastIndexOf(")");
@@ -383,6 +608,11 @@ function extractInside(s) {
   return s.slice(a + 1, b);
 }
 
+/*
+ * Splits functional notation on commas/whitespace, keeping / as its own token.
+ * @param {string} s - Inner text.
+ * @returns {Array<string>} Tokens.
+ */
 function splitValues(s) {
   var out = [], cur = "";
   for (var i = 0; i < s.length; i++) {
@@ -404,6 +634,12 @@ function splitValues(s) {
   return out;
 }
 
+/*
+ * One channel/alpha token; trailing % handled (alpha-aware).
+ * @param {string} s - Token.
+ * @param {boolean} isAlpha - Whether this token is alpha.
+ * @returns {number} Normalized value.
+ */
 function parseComponent(s, isAlpha) {
   var t = String(s).trim();
   if (t.length === 0) perr("empty component");
@@ -414,6 +650,11 @@ function parseComponent(s, isAlpha) {
   return isAlpha ? clamp01(v) : v;
 }
 
+/*
+ * Parses rgb()/rgba() to 0..1 (slash alpha + legacy comma alpha).
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseRgbString(s) {
   var parts = splitValues(extractInside(s));
   var alpha = 1;
@@ -440,6 +681,11 @@ function parseRgbString(s) {
   };
 }
 
+/*
+ * Parses hsl()/hsla() to 0..1 via fromHsl.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseHslString(s) {
   var parts = splitValues(extractInside(s));
   var alpha = 1;
@@ -461,6 +707,11 @@ function parseHslString(s) {
     a: clamp01(alpha)});
 }
 
+/*
+ * Parses hsv()/hsva()/hsb()/hsba() to 0..1 via fromHsv.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseHsvString(s) {
   var parts = splitValues(extractInside(s));
   var alpha = 1;
@@ -482,6 +733,11 @@ function parseHsvString(s) {
     a: clamp01(alpha)});
 }
 
+/*
+ * Parses cmyk()/device-cmyk() to 0..1 via fromCmyk.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseCmykString(s) {
   var parts = splitValues(extractInside(s));
   if (parts.length < 4) perr("cmyk requires 4 components");
@@ -498,6 +754,11 @@ function parseCmykString(s) {
     a: clamp01(alpha)});
 }
 
+/*
+ * Parses lab() to 0..1 via fromLab.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseLabString(s) {
   var parts = splitValues(extractInside(s));
   if (parts.length < 3) perr("lab requires 3 components");
@@ -512,6 +773,11 @@ function parseLabString(s) {
   return fromLab({l: l, a: a, b: b, alpha: clamp01(alpha)});
 }
 
+/*
+ * Parses lch() to 0..1 via fromLch.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseLchString(s) {
   var parts = splitValues(extractInside(s));
   if (parts.length < 3) perr("lch requires 3 components");
@@ -528,6 +794,11 @@ function parseLchString(s) {
   return fromLch({l: l, c: cc, h: hueMod(h), alpha: clamp01(alpha)});
 }
 
+/*
+ * Parses oklab() to 0..1 via fromOklab.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseOklabString(s) {
   var parts = splitValues(extractInside(s));
   if (parts.length < 3) perr("oklab requires 3 components");
@@ -542,6 +813,11 @@ function parseOklabString(s) {
   return fromOklab({l: l, a: a, b: b, alpha: clamp01(alpha)});
 }
 
+/*
+ * Parses oklch() to 0..1 via fromOklchToColor.
+ * @param {string} s - Full notation.
+ * @returns {Rgb01} Internal color.
+ */
 function parseOklchString(s) {
   var parts = splitValues(extractInside(s));
   if (parts.length < 3) perr("oklch requires 3 components");
@@ -635,6 +911,11 @@ var NAMED = {
   yellow: [255, 255, 0], yellowgreen: [154, 205, 50]
 };
 
+/*
+ * Full string to 0..1 color: transparent, named, hex, then functional.
+ * @param {string} s - Color text.
+ * @returns {Rgb01} Internal color.
+ */
 function parseColorInner(s) {
   var input = String(s).trim();
   if (input.length === 0) perr("empty color string");
@@ -714,7 +995,17 @@ function parseColorInner(s) {
 
 // -- stringify -------------------------------------------------------------
 
+/*
+ * 0..1 color to lowercase #rrggbb.
+ * @param {Rgb01} c - Internal color.
+ * @returns {string} Hex string.
+ */
 function toHexInner(c) {
+/*
+ * One channel to 2-digit hex.
+ * @param {number} x - Channel 0..1.
+ * @returns {string} Two hex digits.
+ */
   function h(x) {
     var s = Math.round(clamp01(x) * 255).toString(16);
     return s.length === 1 ? "0" + s : s;
@@ -722,6 +1013,11 @@ function toHexInner(c) {
   return "#" + h(c.r) + h(c.g) + h(c.b);
 }
 
+/*
+ * Alpha to minimal decimals (0.5, never 0.500).
+ * @param {number} a - Alpha 0..1.
+ * @returns {string} Formatted alpha.
+ */
 function formatAlpha(a) {
   var s = clamp01(a).toFixed(3).replace(/0+$/, "");
   if (s.endsWith(".")) s = s.slice(0, -1);
@@ -729,6 +1025,11 @@ function formatAlpha(a) {
   return s;
 }
 
+/*
+ * 0..1 color to an rgb()/rgba() string.
+ * @param {Rgb01} c - Internal color.
+ * @returns {string} CSS string.
+ */
 function toRgbInner(c) {
   var r = Math.round(clamp01(c.r) * 255);
   var g = Math.round(clamp01(c.g) * 255);
@@ -739,6 +1040,11 @@ function toRgbInner(c) {
   return "rgba(" + r + ", " + g + ", " + b + ", " + formatAlpha(c.a) + ")";
 }
 
+/*
+ * 0..1 color to an hsl()/hsla() string.
+ * @param {Rgb01} c - Internal color.
+ * @returns {string} CSS string.
+ */
 function toHslInner(c) {
   var hsl = rgbToHsl(c);
   var h = Math.round(hsl.h);
@@ -751,7 +1057,19 @@ function toHslInner(c) {
 
 // -- names -----------------------------------------------------------------
 
+/*
+ * Linearized sRGB to CIE XYZ (x100). Helper for toName.
+ * @param {number} r - Red 0..1.
+ * @param {number} g - Green 0..1.
+ * @param {number} b - Blue 0..1.
+ * @returns {object} {x, y, z}.
+ */
 function rgbToXyz(r, g, b) {
+/*
+ * Linearizes one sRGB channel.
+ * @param {number} v - Channel 0..1.
+ * @returns {number} Linear value.
+ */
   function lin(v) {
     return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   }
@@ -763,7 +1081,19 @@ function rgbToXyz(r, g, b) {
   };
 }
 
+/*
+ * CIE XYZ to Lab. Helper for toName.
+ * @param {number} x - X.
+ * @param {number} y - Y.
+ * @param {number} z - Z.
+ * @returns {object} {l, a, b}.
+ */
 function xyzToLab(x, y, z) {
+/*
+ * Lab f(t) nonlinearity.
+ * @param {number} t - Normalized tristimulus.
+ * @returns {number} f(t).
+ */
   function f(t) {
     return t > 0.008856 ? Math.pow(t, 1 / 3) : 7.787 * t + 16 / 116;
   }
@@ -771,11 +1101,21 @@ function xyzToLab(x, y, z) {
   return {l: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz)};
 }
 
+/*
+ * 0..1 color to Lab. Helper for toName.
+ * @param {Rgb01} c - Internal color.
+ * @returns {object} {l, a, b}.
+ */
 function colorToLab(c) {
   var xyz = rgbToXyz(c.r, c.g, c.b);
   return xyzToLab(xyz.x, xyz.y, xyz.z);
 }
 
+/*
+ * Nearest of the 148 named colors by squared Lab distance.
+ * @param {Rgb01} c - Internal color.
+ * @returns {string} Color name.
+ */
 function toNameInner(c) {
   var lab = colorToLab(c);
   var best = "", bestDist = Infinity;
@@ -793,6 +1133,12 @@ function toNameInner(c) {
 
 // -- manipulate ------------------------------------------------------------
 
+/*
+ * HSL lightness + amount; alpha preserved.
+ * @param {Rgb01} c - Internal color.
+ * @param {number} amount - Points to add.
+ * @returns {Rgb01} Adjusted color.
+ */
 function lightenInner(c, amount) {
   var hsl = rgbToHsl(c);
   hsl.l = clamp01(hsl.l + amount / 100);
@@ -801,6 +1147,12 @@ function lightenInner(c, amount) {
   return out;
 }
 
+/*
+ * HSL lightness - amount; alpha preserved.
+ * @param {Rgb01} c - Internal color.
+ * @param {number} amount - Points to subtract.
+ * @returns {Rgb01} Adjusted color.
+ */
 function darkenInner(c, amount) {
   var hsl = rgbToHsl(c);
   hsl.l = clamp01(hsl.l - amount / 100);
@@ -809,6 +1161,12 @@ function darkenInner(c, amount) {
   return out;
 }
 
+/*
+ * HSL saturation + amount; alpha preserved.
+ * @param {Rgb01} c - Internal color.
+ * @param {number} amount - Points to add.
+ * @returns {Rgb01} Adjusted color.
+ */
 function saturateInner(c, amount) {
   var hsl = rgbToHsl(c);
   hsl.s = clamp01(hsl.s + amount / 100);
@@ -817,6 +1175,12 @@ function saturateInner(c, amount) {
   return out;
 }
 
+/*
+ * Hue rotation by degrees; alpha preserved.
+ * @param {Rgb01} c - Internal color.
+ * @param {number} amount - Degrees to add.
+ * @returns {Rgb01} Adjusted color.
+ */
 function spinInner(c, amount) {
   var hsl = rgbToHsl(c);
   hsl.h = hueMod(hsl.h + amount);
@@ -825,8 +1189,18 @@ function spinInner(c, amount) {
   return out;
 }
 
+/*
+ * spin(180).
+ * @param {Rgb01} c - Internal color.
+ * @returns {Rgb01} Complement.
+ */
 function complementInner(c) { return spinInner(c, 180); }
 
+/*
+ * Full desaturation (s - 1, clamped).
+ * @param {Rgb01} c - Internal color.
+ * @returns {Rgb01} Gray with the same lightness.
+ */
 function greyscaleInner(c) {
   var hsl = rgbToHsl(c);
   hsl.s = clamp01(hsl.s - 1);
@@ -835,6 +1209,13 @@ function greyscaleInner(c) {
   return out;
 }
 
+/*
+ * Linear sRGB mix; weight 0..100 as a*(1-w) + b*w, clamped.
+ * @param {Rgb01} a - First color.
+ * @param {Rgb01} b - Second color.
+ * @param {number} weight - 0..100 toward b.
+ * @returns {Rgb01} Mixed color.
+ */
 function mixInner(a, b, weight) {
   var w = clamp(weight / 100, 0, 1);
   var w1 = 1 - w;
@@ -844,13 +1225,28 @@ function mixInner(a, b, weight) {
   };
 }
 
+/*
+ * [c, spin +120, spin +240].
+ * @param {Rgb01} c - Internal color.
+ * @returns {Array<Rgb01>} Three colors.
+ */
 function triadInner(c) {
   return [c, spinInner(c, 120), spinInner(c, 240)];
 }
 
 // -- contrast --------------------------------------------------------------
 
+/*
+ * WCAG relative luminance.
+ * @param {Rgb01} c - Internal color.
+ * @returns {number} 0..1.
+ */
 function luminance(c) {
+/*
+ * Linearizes one sRGB channel.
+ * @param {number} v - Channel 0..1.
+ * @returns {number} Linear value.
+ */
   function lin(v) {
     return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   }
@@ -858,20 +1254,42 @@ function luminance(c) {
     0.0722 * lin(clamp01(c.b));
 }
 
+/*
+ * WCAG contrast ratio, 1..21.
+ * @param {Rgb01} a - First color.
+ * @param {Rgb01} b - Second color.
+ * @returns {number} Ratio.
+ */
 function contrastRatioInner(a, b) {
   var la = luminance(a), lb = luminance(b);
   var l1 = Math.max(la, lb), l2 = Math.min(la, lb);
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
+/*
+ * AA small-text readability (ratio >= 4.5).
+ * @param {Rgb01} a - First color.
+ * @param {Rgb01} b - Second color.
+ * @returns {boolean} Readable or not.
+ */
 function isReadableInner(a, b) {
   return contrastRatioInner(a, b) >= 4.5;
 }
 
+/*
+ * True when luminance > 0.5.
+ * @param {Rgb01} c - Internal color.
+ * @returns {boolean} Light or not.
+ */
 function isLightInner(c) { return luminance(c) > 0.5; }
 
 // -- random ------------------------------------------------------------------
 
+/*
+ * Hue interval for one random-color family.
+ * @param {string} name - Family name.
+ * @returns {Array<number>} [lo, hi] degrees.
+ */
 function hueRange(name) {
   switch (String(name).toLowerCase()) {
     case "red": return [0, 20];
@@ -885,6 +1303,10 @@ function hueRange(name) {
   }
 }
 
+/*
+ * Random vivid color (HSV with s >= 0.1, v >= 0.2), opaque.
+ * @returns {Rgba255} Boundary color.
+ */
 function randomInner() {
   var h = Math.random() * 360;
   var s = Math.random(), v = Math.random();
@@ -896,63 +1318,133 @@ function randomInner() {
 
 // -- public API --------------------------------------------------------------
 
+/*
+ * colors.parse(text) -> {r, g, b, a}. Throws on unknown colors and non-strings.
+ * @param {string} text - Color text.
+ * @returns {Rgba255} Boundary color.
+ */
 function parse(text) {
   needString(text, "parse", "text");
   return toOut(parseColorInner(text));
 }
 
+/*
+ * colors.random() -> {r, g, b, a}.
+ * @returns {Rgba255} Boundary color.
+ */
 function random() {
   return randomInner();
 }
 
+/*
+ * colors.toHex(color) -> "#rrggbb".
+ * @param {object} color - Boundary color.
+ * @returns {string} Hex string.
+ */
 function toHex(color) {
   return toHexInner(needColor(color, "toHex"));
 }
 
+/*
+ * colors.toRgb(color) -> "rgb()" / "rgba()".
+ * @param {object} color - Boundary color.
+ * @returns {string} CSS string.
+ */
 function toRgb(color) {
   return toRgbInner(needColor(color, "toRgb"));
 }
 
+/*
+ * colors.toHsl(color) -> "hsl()" / "hsla()".
+ * @param {object} color - Boundary color.
+ * @returns {string} CSS string.
+ */
 function toHsl(color) {
   return toHslInner(needColor(color, "toHsl"));
 }
 
+/*
+ * colors.toName(color) -> nearest named color.
+ * @param {object} color - Boundary color.
+ * @returns {string} Color name.
+ */
 function toName(color) {
   return toNameInner(needColor(color, "toName"));
 }
 
+/*
+ * colors.lighten(color, amount) -> color (HSL L + amount).
+ * @param {object} color - Boundary color.
+ * @param {number} amount - Points to add.
+ * @returns {Rgba255} Boundary color.
+ */
 function lighten(color, amount) {
   var c = needColor(color, "lighten");
   needNumber(amount, "lighten", "amount");
   return toOut(lightenInner(c, amount));
 }
 
+/*
+ * colors.darken(color, amount) -> color (HSL L - amount).
+ * @param {object} color - Boundary color.
+ * @param {number} amount - Points to subtract.
+ * @returns {Rgba255} Boundary color.
+ */
 function darken(color, amount) {
   var c = needColor(color, "darken");
   needNumber(amount, "darken", "amount");
   return toOut(darkenInner(c, amount));
 }
 
+/*
+ * colors.saturate(color, amount) -> color (HSL S + amount).
+ * @param {object} color - Boundary color.
+ * @param {number} amount - Points to add.
+ * @returns {Rgba255} Boundary color.
+ */
 function saturate(color, amount) {
   var c = needColor(color, "saturate");
   needNumber(amount, "saturate", "amount");
   return toOut(saturateInner(c, amount));
 }
 
+/*
+ * colors.spin(color, degrees) -> color (hue + amount).
+ * @param {object} color - Boundary color.
+ * @param {number} amount - Degrees to add.
+ * @returns {Rgba255} Boundary color.
+ */
 function spin(color, amount) {
   var c = needColor(color, "spin");
   needNumber(amount, "spin", "amount");
   return toOut(spinInner(c, amount));
 }
 
+/*
+ * colors.complement(color) -> color (hue + 180).
+ * @param {object} color - Boundary color.
+ * @returns {Rgba255} Boundary color.
+ */
 function complement(color) {
   return toOut(complementInner(needColor(color, "complement")));
 }
 
+/*
+ * colors.greyscale(color) -> color (no saturation).
+ * @param {object} color - Boundary color.
+ * @returns {Rgba255} Boundary color.
+ */
 function greyscale(color) {
   return toOut(greyscaleInner(needColor(color, "greyscale")));
 }
 
+/*
+ * colors.mix(a, b[, weight]) -> color (weight 0..100, default 50).
+ * @param {object} a - First boundary color.
+ * @param {object} b - Second boundary color.
+ * @param {number|undefined} weight - 0..100 toward b.
+ * @returns {Rgba255} Boundary color.
+ */
 function mix(a, b, weight) {
   var ca = needColor(a, "mix"), cb = needColor(b, "mix");
   if (weight === undefined) weight = 50;
@@ -960,21 +1452,43 @@ function mix(a, b, weight) {
   return toOut(mixInner(ca, cb, weight));
 }
 
+/*
+ * colors.triad(color) -> 3 colors.
+ * @param {object} color - Boundary color.
+ * @returns {Array<Rgba255>} Boundary colors.
+ */
 function triad(color) {
   var c = needColor(color, "triad");
   return triadInner(c).map(toOut);
 }
 
+/*
+ * colors.contrastRatio(a, b) -> 1..21.
+ * @param {object} a - First boundary color.
+ * @param {object} b - Second boundary color.
+ * @returns {number} Ratio.
+ */
 function contrastRatio(a, b) {
   return contrastRatioInner(needColor(a, "contrastRatio"),
     needColor(b, "contrastRatio"));
 }
 
+/*
+ * colors.isReadable(a, b) -> bool (WCAG AA, small text).
+ * @param {object} a - First boundary color.
+ * @param {object} b - Second boundary color.
+ * @returns {boolean} Readable or not.
+ */
 function isReadable(a, b) {
   return isReadableInner(needColor(a, "isReadable"),
     needColor(b, "isReadable"));
 }
 
+/*
+ * colors.isLight(color) -> bool.
+ * @param {object} color - Boundary color.
+ * @returns {boolean} Light or not.
+ */
 function isLight(color) {
   return isLightInner(needColor(color, "isLight"));
 }
