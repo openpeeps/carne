@@ -22,7 +22,6 @@ script that just runs, take Carne.
 - HTTP/1.1, HTTP/2, UDP, TCP and WebSockets via [pkg/powpow](https://github.com/openpeeps/powpow)
 - Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`,
   `sql`, `colors`, `css`, `diff`, `qr`, `svg`
-- JIT compiled regex engine
 - i18n via GNU Gettext PO/MO
 - CSS and JavaScript bundler via [pkg/squeezy](https://github.com/openpeeps/squeezy)
 - Built-in package manager (`carne pkg`)
