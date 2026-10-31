@@ -1,10 +1,10 @@
-// Pure-JS subset of std/colors, for bench/stdlib only (not for shipping).
+// Pure-JS subset of the std/colors surface, for bench/stdlib reference.
 // Covers the benchmarked surface: hex + rgb() + 16 named colors parse,
 // {r,g,b,a} shape, toHex/toRgb, lighten, mix, complement, contrastRatio,
-// isReadable. std/colors (openparser) covers far more: hsl()/hsv()/
-// cmyk()/lab()/lch()/oklab()/oklch() strings, 148 named colors,
-// saturate/spin/triad/greyscale/toHsl/toName. Perf comparison is fair
-// only on the shared subset (hex-heavy inputs below).
+// isReadable. std/colors is also pure JS (src/carne/std/js/colors.js)
+// with full coverage: hsl()/hsv()/cmyk()/lab()/lch()/oklab()/oklch()
+// strings, 148 named colors, saturate/spin/triad/greyscale/toHsl/toName.
+// Perf comparison is fair only on the shared subset (hex-heavy inputs).
 "use strict";
 
 var NAMED = {

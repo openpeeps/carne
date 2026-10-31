@@ -1,4 +1,4 @@
-# Carne std/colors: color parsing, formatting and math via openparser.
+# Carne std/colors: color parsing, formatting and math (pure JS).
 #
 # Colors cross the boundary as {r, g, b, a} objects (r/g/b 0..255
 # integers, a 0..1):
@@ -9,275 +9,52 @@
 #   colors.lighten(colors.parse("#333"), 20) -> {r, g, b, a}
 #   colors.contrastRatio(a, b)      -> 1..21
 #
-# Accepts anything parseColor does: hex, rgb()/hsl()/hsv()/cmyk()/
-# lab()/lch()/oklab()/oklch() strings and named colors.
-
-import std/math
+# Accepts hex, rgb()/hsl()/hsv()/cmyk()/lab()/lch()/oklab()/oklch()
+# strings and named colors.
+#
+# The implementation lives in js/colors.js (CommonJS). It is embedded
+# at build time via slurp and evaluated on first require, so the
+# binary has no runtime file dependency and no openparser dependency
+# for colors.
 
 import javascriptcore
 
-import pkg/openparser/colors
-
 import ../bridge
 
-proc colorToJS(ctx: JSContextRef; c: Color; name: string;
-    exception: ptr JSValueRef): JSValueRef =
-  ## Builds {r, g, b, a} directly on the JS heap. returnJson would
-  ## build a JsonNode, stringify it, and have JSC re-parse the string:
-  ## three traversals plus two string conversions for four numbers.
-  let obj = newObject(ctx)
-  var ex: JSValueRef = nil
-  setProp(ctx, obj, "r", toJS(ctx, int(round(c.r * 255.0))), addr ex)
-  setProp(ctx, obj, "g", toJS(ctx, int(round(c.g * 255.0))), addr ex)
-  setProp(ctx, obj, "b", toJS(ctx, int(round(c.b * 255.0))), addr ex)
-  setProp(ctx, obj, "a", toJS(ctx, c.a), addr ex)
-  if ex != nil:
-    throwError(ctx, name & ": could not convert result to JS", exception)
+const colorsJsSource = slurp("js/colors.js")
+
+proc install*(ctx: JSContextRef; rt: Runtime): JSObjectRef =
+  ## Loads the bundled JS implementation as a CommonJS module and
+  ## returns its `module.exports`. nil on failure (require reports
+  ## "failed to initialize").
+  let moduleObj = newObject(ctx)
+  let exportsObj = newObject(ctx)
+  var setupEx: JSValueRef = nil
+  setProp(ctx, moduleObj, "exports", exportsObj, addr setupEx)
+  if setupEx != nil:
     return nil
-  obj
-
-proc numField(v: NimValue; field, name: string): float =
-  ## Reads a numeric field as float. Raises on anything else.
-  if not v.hasKey(field):
-    raise newException(CatchableError, "color needs numeric \"" & field & "\"")
-  let f = v.get(field, name)
-  case f.kind
-  of nvkInt:
-    float(f.i)
-  of nvkFloat:
-    f.f
-  else:
-    raise newException(CatchableError, "color needs numeric \"" & field & "\"")
-
-proc colorVal(v: NimValue; name, docBlock: string; ctx: JSContextRef;
-    exception: ptr JSValueRef; color: var Color): bool =
-  ## Reads a snapshot as a {r, g, b, a?} object. False + JS throw.
-  template oerr(msg: string): untyped =
-    throwError(ctx,
-      (if docBlock.len > 0: docBlock & "\n" else: "") & msg, exception)
-  if v.kind != nvkObject:
-    oerr(name & ": color must be an {r, g, b, a?} object")
-    return false
-  try:
-    var c = Color(a: 1.0)
-    c.r = numField(v, "r", name) / 255.0
-    c.g = numField(v, "g", name) / 255.0
-    c.b = numField(v, "b", name) / 255.0
-    if v.hasKey("a"):
-      c.a = numField(v, "a", name)
-    if c.r < 0.0 or c.r > 1.0 or c.g < 0.0 or c.g > 1.0 or
-        c.b < 0.0 or c.b > 1.0 or c.a < 0.0 or c.a > 1.0:
-      oerr(name & ": r/g/b must be 0..255 and a 0..1")
-      return false
-    color = c
-    true
-  except CatchableError as e:
-    oerr(name & ": " & e.msg)
-    false
-
-## Builds the std/colors namespace object.
-init proc(module: Module) =
-  exportObject:
-
-    module.registerFn parse(text: string):
-      ## colors.parse(text) -> {r, g, b, a}
-      try:
-        colorToJS(ctx, parseColor(text), "parse", exception)
-      except CatchableError as e:
-        throwError(ctx, "parse: " & e.msg, exception)
-        nil
-
-    module.registerFn random():
-      ## colors.random() -> {r, g, b, a}
-      try:
-        colorToJS(ctx, randomColor(), "random", exception)
-      except CatchableError as e:
-        throwError(ctx, "random: " & e.msg, exception)
-        nil
-
-    module.registerFn toHex(color: NimValue):
-      ## colors.toHex(color) -> "#rrggbb"
-      var c: Color
-      if not colorVal(color, "toHex", docBlock, ctx, exception, c):
-        return nil
-      try:
-        toJS(ctx, c.toHex())
-      except CatchableError as e:
-        throwError(ctx, "toHex: " & e.msg, exception)
-        nil
-
-    module.registerFn toRgb(color: NimValue):
-      ## colors.toRgb(color) -> "rgb(r, g, b)"
-      var c: Color
-      if not colorVal(color, "toRgb", docBlock, ctx, exception, c):
-        return nil
-      try:
-        toJS(ctx, c.toRgbString())
-      except CatchableError as e:
-        throwError(ctx, "toRgb: " & e.msg, exception)
-        nil
-
-    module.registerFn toHsl(color: NimValue):
-      ## colors.toHsl(color) -> "hsl(h, s%, l%)"
-      var c: Color
-      if not colorVal(color, "toHsl", docBlock, ctx, exception, c):
-        return nil
-      try:
-        toJS(ctx, c.toHslString())
-      except CatchableError as e:
-        throwError(ctx, "toHsl: " & e.msg, exception)
-        nil
-
-    module.registerFn toName(color: NimValue):
-      ## colors.toName(color) -> nearest named color
-      var c: Color
-      if not colorVal(color, "toName", docBlock, ctx, exception, c):
-        return nil
-      try:
-        toJS(ctx, c.toName())
-      except CatchableError as e:
-        throwError(ctx, "toName: " & e.msg, exception)
-        nil
-
-    module.registerFn lighten(color: NimValue, amount: float):
-      ## colors.lighten(color, amount) -> {r, g, b, a}
-      var c: Color
-      if not colorVal(color, "lighten", docBlock, ctx, exception, c):
-        return nil
-      try:
-        colorToJS(ctx, c.lighten(amount), "lighten", exception)
-      except CatchableError as e:
-        throwError(ctx, "lighten: " & e.msg, exception)
-        nil
-
-    module.registerFn darken(color: NimValue, amount: float):
-      ## colors.darken(color, amount) -> {r, g, b, a}
-      var c: Color
-      if not colorVal(color, "darken", docBlock, ctx, exception, c):
-        return nil
-      try:
-        colorToJS(ctx, c.darken(amount), "darken", exception)
-      except CatchableError as e:
-        throwError(ctx, "darken: " & e.msg, exception)
-        nil
-
-    module.registerFn saturate(color: NimValue, amount: float):
-      ## colors.saturate(color, amount) -> {r, g, b, a}
-      var c: Color
-      if not colorVal(color, "saturate", docBlock, ctx, exception, c):
-        return nil
-      try:
-        colorToJS(ctx, c.saturate(amount), "saturate", exception)
-      except CatchableError as e:
-        throwError(ctx, "saturate: " & e.msg, exception)
-        nil
-
-    module.registerFn spin(color: NimValue, amount: float):
-      ## colors.spin(color, degrees) -> {r, g, b, a}
-      var c: Color
-      if not colorVal(color, "spin", docBlock, ctx, exception, c):
-        return nil
-      try:
-        colorToJS(ctx, c.spin(amount), "spin", exception)
-      except CatchableError as e:
-        throwError(ctx, "spin: " & e.msg, exception)
-        nil
-
-    module.registerFn complement(color: NimValue):
-      ## colors.complement(color) -> {r, g, b, a}
-      var c: Color
-      if not colorVal(color, "complement", docBlock, ctx, exception, c):
-        return nil
-      try:
-        colorToJS(ctx, c.complement(), "complement", exception)
-      except CatchableError as e:
-        throwError(ctx, "complement: " & e.msg, exception)
-        nil
-
-    module.registerFn greyscale(color: NimValue):
-      ## colors.greyscale(color) -> {r, g, b, a}
-      var c: Color
-      if not colorVal(color, "greyscale", docBlock, ctx, exception, c):
-        return nil
-      try:
-        colorToJS(ctx, c.greyscale(), "greyscale", exception)
-      except CatchableError as e:
-        throwError(ctx, "greyscale: " & e.msg, exception)
-        nil
-
-    module.registerFn mix(aVal: NimValue, bVal: NimValue,
-        weight: default(float, 50.0)):
-      ## colors.mix(a, b[, weight]) -> {r, g, b, a} (weight 0..100, default 50)
-      var a, b: Color
-      if not colorVal(aVal, "mix", docBlock, ctx, exception, a):
-        return nil
-      if not colorVal(bVal, "mix", docBlock, ctx, exception, b):
-        return nil
-      try:
-        colorToJS(ctx, mix(a, b, weight), "mix", exception)
-      except CatchableError as e:
-        throwError(ctx, "mix: " & e.msg, exception)
-        nil
-
-    module.registerFn triad(color: NimValue):
-      ## colors.triad(color) -> [{r, g, b, a} x3]
-      var c: Color
-      if not colorVal(color, "triad", docBlock, ctx, exception, c):
-        return nil
-      try:
-        var vals: seq[JSValueRef] = @[]
-        for m in triad(c):
-          let j = colorToJS(ctx, m, "triad", exception)
-          if j == nil:
-            return nil
-          vals.add(j)
-        var ex: JSValueRef = nil
-        let arr =
-          if vals.len > 0:
-            JSObjectMakeArray(ctx, csize_t(vals.len), addr vals[0], addr ex)
-          else:
-            JSObjectMakeArray(ctx, 0, nil, addr ex)
-        if ex != nil:
-          throwError(ctx, "triad: could not convert result to JS", exception)
-          return nil
-        arr
-      except CatchableError as e:
-        throwError(ctx, "triad: " & e.msg, exception)
-        nil
-
-    module.registerFn contrastRatio(aVal: NimValue, bVal: NimValue):
-      ## colors.contrastRatio(a, b) -> 1..21
-      var a, b: Color
-      if not colorVal(aVal, "contrastRatio", docBlock, ctx, exception, a):
-        return nil
-      if not colorVal(bVal, "contrastRatio", docBlock, ctx, exception, b):
-        return nil
-      try:
-        toJS(ctx, contrastRatio(a, b))
-      except CatchableError as e:
-        throwError(ctx, "contrastRatio: " & e.msg, exception)
-        nil
-
-    module.registerFn isReadable(aVal: NimValue, bVal: NimValue):
-      ## colors.isReadable(a, b) -> bool (WCAG AA, small text)
-      var a, b: Color
-      if not colorVal(aVal, "isReadable", docBlock, ctx, exception, a):
-        return nil
-      if not colorVal(bVal, "isReadable", docBlock, ctx, exception, b):
-        return nil
-      try:
-        toJS(ctx, isReadable(a, b))
-      except CatchableError as e:
-        throwError(ctx, "isReadable: " & e.msg, exception)
-        nil
-
-    module.registerFn isLight(color: NimValue):
-      ## colors.isLight(color) -> bool
-      var c: Color
-      if not colorVal(color, "isLight", docBlock, ctx, exception, c):
-        return nil
-      try:
-        toJS(ctx, isLight(c))
-      except CatchableError as e:
-        throwError(ctx, "isLight: " & e.msg, exception)
-        nil
+  let wrapped = "(function(module, exports) {\n" & colorsJsSource & "\n})"
+  var ex: JSValueRef = nil
+  let fn = evalScript(ctx, wrapped, sourceURL = "std/colors.js",
+    exception = ex)
+  if ex != nil or fn == nil or not JSValueIsObject(ctx, fn):
+    return nil
+  let fnObj = cast[JSObjectRef](fn)
+  if not JSObjectIsFunction(ctx, fnObj):
+    return nil
+  var callEx: JSValueRef = nil
+  var args: array[2, JSValueRef]
+  args[0] = moduleObj
+  args[1] = exportsObj
+  discard JSObjectCallAsFunction(ctx, fnObj, nil, 2, addr args[0],
+    addr callEx)
+  if callEx != nil:
+    return nil
+  var getEx: JSValueRef = nil
+  let key = newJSString("exports")
+  defer: JSStringRelease(key)
+  let finalExp = JSObjectGetProperty(ctx, moduleObj, key, addr getEx)
+  if getEx != nil or finalExp == nil or
+      not JSValueIsObject(ctx, finalExp):
+    return nil
+  cast[JSObjectRef](finalExp)

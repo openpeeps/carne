@@ -1,4 +1,4 @@
-// bench/stdlib/bench_colors.js — std/colors (Nim/openparser) vs colors_js.js.
+// bench/stdlib/bench_colors.js — std/colors (JS) vs colors_js.js subset.
 // Run: bin/carne run bench/stdlib/bench_colors.js
 // Equivalence is asserted first; any mismatch throws before timing.
 var nim = require("std/colors");

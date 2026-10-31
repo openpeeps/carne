@@ -37,7 +37,7 @@ script that just runs, take Carne.
 - Powerful Standard Library fully written in Nim lang
 - Cryptographic library via [pkg/nimcypher](https://github.com/nimbase/nimcypher)
 - HTTP/1.1, H/2, UDP, TCP and WebSockets library via [pkg/powpow](https://github.com/openpeeps/powpow)
-- Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`, `sql`, `colors`, `css`, `diff`, `qr`, `svg` via [pkg/openparser](https://github.com/openpeeps/openparser)
+- Built-in formatters: `yaml`, `toml`, `csv`, `xml`, `markdown`, `vcard`, `feed`, `sql`, `css`, `diff`, `qr`, `svg` via [pkg/openparser](https://github.com/openpeeps/openparser) (`colors` is pure JS)
 - JIT compiled Regex Engine
 - i18n via GNU Gettext PO/MO
 - CSS and JavaScript bundler via [pkg/squeezy](https://github.com/openpeeps/squeezy)
@@ -354,7 +354,7 @@ console.log(web.host + web.path); // "host/p"
 
 ### `std/colors`
 
-Color parsing, formatting and math
+Color parsing, formatting and math (pure JS, no native dependency)
 
 ```js
 const colors = require("std/colors");
