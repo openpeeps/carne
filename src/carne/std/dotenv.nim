@@ -5,7 +5,7 @@
 #   dotenv.load([path][, override]) -> undefined (writes into process env,
 #                                     visible through std/env; defaults to ".env")
 
-import std/[json, tables]
+import std/tables
 
 import javascriptcore
 
@@ -24,14 +24,19 @@ init proc(module: Module) =
         # instead of the process environment.
         var local = initTable[string, string]()
         var cmdCache = initTable[string, string]()
-        let obj = newJObject()
+        let obj = newObject(ctx)
+        var ex: JSValueRef = nil
         for e in parseEnv(text):
           let v =
             if e.expand: expandValue(e.value, local, cmdCache)
             else: e.value
           local[e.key] = v
-          obj[e.key] = %v
-        returnJson(ctx, obj, "parse", exception)
+          setProp(ctx, obj, e.key, toJS(ctx, v), addr ex)
+          if ex != nil:
+            throwError(ctx, "parse: could not convert result to JS",
+              exception)
+            return nil
+        obj
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil

@@ -9,8 +9,6 @@
 # becomes U+0100+b). The mapping is self-consistent: stringify output
 # always parses back. Do not interpret the strings as text.
 
-import std/json
-
 import javascriptcore
 
 import pkg/openparser/bson
@@ -51,7 +49,12 @@ init proc(module: Module) =
         var bs = newSeq[byte](raw.len)
         if raw.len > 0:
           copyMem(addr bs[0], unsafeAddr raw[0], raw.len)
-        returnJson(ctx, fromBson(bs), "parse", exception)
+        let j = jsonNodeToJS(ctx, fromBson(bs))
+        if j == nil:
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
@@ -59,7 +62,7 @@ init proc(module: Module) =
     module.registerFn stringify(value: JSValueRef):
       ## bson.stringify(value) -> data (opaque, do not read as text)
       var err = ""
-      let node = jsToJson(ctx, value, err)
+      let node = jsToJsonNode(ctx, value, err)
       if node == nil:
         throwError(ctx, "stringify: " & err, exception)
         return nil

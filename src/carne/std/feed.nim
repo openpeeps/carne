@@ -6,7 +6,7 @@
 #
 # Parse-only in v1. Absent options stay absent.
 
-import std/[json, options]
+import std/options
 
 import javascriptcore
 
@@ -14,123 +14,283 @@ import pkg/openparser/[feed, rss]
 
 import ../bridge
 
-proc optStr(obj: JsonNode; key: string; v: Option[string]) =
-  if v.isSome:
-    obj[key] = %v.get()
 
-proc optInt(obj: JsonNode; key: string; v: Option[int]) =
-  if v.isSome:
-    obj[key] = %v.get()
+
+proc personsToJS[T](ctx: JSContextRef; persons: seq[T]; fname: string;
+    exception: ptr JSValueRef;
+    conv: proc(ctx: JSContextRef; p: T; fname: string;
+      exception: ptr JSValueRef): JSValueRef): JSValueRef =
+  var vals: seq[JSValueRef] = @[]
+  for p in persons:
+    let j = conv(ctx, p, fname, exception)
+    if j == nil:
+      return nil
+    vals.add(j)
+  let arr = makeJSArray(ctx, vals)
+  if arr == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return nil
+  arr
 
 # -- RSS ---------------------------------------------------------------
 
-proc rssMediaToJson(m: RssMediaContent): JsonNode =
-  result = newJObject()
-  optStr(result, "url", m.url)
-  optStr(result, "mediaType", m.mediaType)
-  optStr(result, "medium", m.medium)
-  optInt(result, "height", m.height)
-  optInt(result, "width", m.width)
+proc rssMediaToJS(ctx: JSContextRef; m: RssMediaContent; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not optSetStr(ctx, obj, "url", m.url, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "mediaType", m.mediaType, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "medium", m.medium, fname, exception):
+    return nil
+  if not optSetInt(ctx, obj, "height", m.height, fname, exception):
+    return nil
+  if not optSetInt(ctx, obj, "width", m.width, fname, exception):
+    return nil
+  obj
 
-proc rssItemToJson(item: RssItem): JsonNode =
-  result = newJObject()
-  optStr(result, "title", item.title)
-  optStr(result, "link", item.link)
-  optStr(result, "description", item.description)
-  optStr(result, "pubDate", item.pubDate)
-  optStr(result, "category", item.category)
-  optStr(result, "guid", item.guid)
-  optStr(result, "source", item.source)
+proc rssItemToJS(ctx: JSContextRef; item: RssItem; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not optSetStr(ctx, obj, "title", item.title, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "link", item.link, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "description", item.description, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "pubDate", item.pubDate, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "category", item.category, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "guid", item.guid, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "source", item.source, fname, exception):
+    return nil
   if item.mediaContent.isSome:
-    result["mediaContent"] = rssMediaToJson(item.mediaContent.get())
+    let m = rssMediaToJS(ctx, item.mediaContent.get(), fname, exception)
+    if m == nil:
+      return nil
+    if not setPropChecked(ctx, obj, "mediaContent", m, fname, exception):
+      return nil
+  obj
 
-proc rssToJson(f: RssFeed): JsonNode =
-  result = %*{
-    "title": f.title, "link": f.link, "description": f.description,
-    "copyright": f.copyright, "pubDate": f.pubDate,
-    "lastBuildDate": f.lastBuildDate, "ttl": f.ttl}
-  optStr(result, "atomSelfLink", f.atomSelfLink)
-  result["image"] = %*{
-    "url": f.image.url, "title": f.image.title, "link": f.image.link}
-  var items = newJArray()
-  for item in f.items:
-    items.add(rssItemToJson(item))
-  result["items"] = items
+proc rssToJS(ctx: JSContextRef; f: RssFeed; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  for (key, val) in [("title", f.title), ("link", f.link),
+      ("description", f.description), ("copyright", f.copyright),
+      ("pubDate", f.pubDate), ("lastBuildDate", f.lastBuildDate)]:
+    if not setPropChecked(ctx, obj, key, toJS(ctx, val), fname,
+        exception):
+      return nil
+  if not setPropChecked(ctx, obj, "ttl", toJS(ctx, f.ttl), fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "atomSelfLink", f.atomSelfLink, fname,
+      exception):
+    return nil
+  let img = newObject(ctx)
+  if not setPropChecked(ctx, img, "url", toJS(ctx, f.image.url), fname,
+      exception):
+    return nil
+  if not setPropChecked(ctx, img, "title", toJS(ctx, f.image.title),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, img, "link", toJS(ctx, f.image.link),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "image", img, fname, exception):
+    return nil
+  let items = personsToJS(ctx, f.items, fname, exception, rssItemToJS)
+  if items == nil:
+    return nil
+  if not setPropChecked(ctx, obj, "items", items, fname, exception):
+    return nil
+  obj
 
 # -- Atom --------------------------------------------------------------
 
-proc atomTextToJson(t: AtomText): JsonNode =
-  %*{"kind": t.kind, "value": t.value}
+proc atomTextToJS(ctx: JSContextRef; t: AtomText): JSValueRef =
+  let obj = newObject(ctx)
+  var ex: JSValueRef = nil
+  setProp(ctx, obj, "kind", toJS(ctx, t.kind), addr ex)
+  setProp(ctx, obj, "value", toJS(ctx, t.value), addr ex)
+  if ex != nil:
+    return nil
+  obj
 
-proc atomPersonToJson(p: AtomPerson): JsonNode =
-  result = %*{"name": p.name}
-  optStr(result, "uri", p.uri)
-  optStr(result, "email", p.email)
+proc atomPersonToJS(ctx: JSContextRef; p: AtomPerson; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "name", toJS(ctx, p.name), fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "uri", p.uri, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "email", p.email, fname, exception):
+    return nil
+  obj
 
-proc atomLinkToJson(l: AtomLink): JsonNode =
-  result = %*{"href": l.href}
-  optStr(result, "rel", l.rel)
-  optStr(result, "type", l.mimeType)
-  optStr(result, "hreflang", l.hreflang)
-  optStr(result, "title", l.title)
-  optInt(result, "length", l.length)
+proc atomLinkToJS(ctx: JSContextRef; l: AtomLink; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "href", toJS(ctx, l.href), fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "rel", l.rel, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "type", l.mimeType, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "hreflang", l.hreflang, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "title", l.title, fname, exception):
+    return nil
+  if not optSetInt(ctx, obj, "length", l.length, fname, exception):
+    return nil
+  obj
 
-proc atomCategoryToJson(c: AtomCategory): JsonNode =
-  result = %*{"term": c.term}
-  optStr(result, "scheme", c.scheme)
-  optStr(result, "label", c.label)
+proc atomCategoryToJS(ctx: JSContextRef; c: AtomCategory; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "term", toJS(ctx, c.term), fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "scheme", c.scheme, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "label", c.label, fname, exception):
+    return nil
+  obj
 
-proc personsToJson[T](persons: seq[T];
-    conv: proc(p: T): JsonNode): JsonNode =
-  result = newJArray()
-  for p in persons:
-    result.add(conv(p))
-
-proc atomEntryToJson(e: AtomEntry): JsonNode =
-  result = %*{"id": e.id, "title": atomTextToJson(e.title),
-    "updated": e.updated}
-  result["authors"] = personsToJson(e.authors, atomPersonToJson)
-  result["contributors"] = personsToJson(e.contributors, atomPersonToJson)
-  result["links"] = personsToJson(e.links, atomLinkToJson)
-  result["categories"] = personsToJson(e.categories, atomCategoryToJson)
+proc atomEntryToJS(ctx: JSContextRef; e: AtomEntry; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "id", toJS(ctx, e.id), fname,
+      exception):
+    return nil
+  let title = atomTextToJS(ctx, e.title)
+  if title == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return nil
+  if not setPropChecked(ctx, obj, "title", title, fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "updated", toJS(ctx, e.updated),
+      fname, exception):
+    return nil
+  template setPeople(key: string; items, conv: untyped): untyped =
+    let arrVal = personsToJS(ctx, items, fname, exception, conv)
+    if arrVal == nil:
+      return nil
+    if not setPropChecked(ctx, obj, key, arrVal, fname, exception):
+      return nil
+  setPeople("authors", e.authors, atomPersonToJS)
+  setPeople("contributors", e.contributors, atomPersonToJS)
+  setPeople("links", e.links, atomLinkToJS)
+  setPeople("categories", e.categories, atomCategoryToJS)
   if e.summary.isSome:
-    result["summary"] = atomTextToJson(e.summary.get())
+    let s = atomTextToJS(ctx, e.summary.get())
+    if s == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "summary", s, fname, exception):
+      return nil
   if e.content.isSome:
     let c = e.content.get()
-    var obj = newJObject()
-    optStr(obj, "kind", c.kind)
-    optStr(obj, "src", c.src)
-    optStr(obj, "value", c.value)
-    result["content"] = obj
+    let cobj = newObject(ctx)
+    if not optSetStr(ctx, cobj, "kind", c.kind, fname, exception):
+      return nil
+    if not optSetStr(ctx, cobj, "src", c.src, fname, exception):
+      return nil
+    if not optSetStr(ctx, cobj, "value", c.value, fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "content", cobj, fname, exception):
+      return nil
   if e.rights.isSome:
-    result["rights"] = atomTextToJson(e.rights.get())
-  optStr(result, "published", e.published)
+    let r = atomTextToJS(ctx, e.rights.get())
+    if r == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "rights", r, fname, exception):
+      return nil
+  if not optSetStr(ctx, obj, "published", e.published, fname, exception):
+    return nil
+  obj
 
-proc atomToJson(f: AtomFeed): JsonNode =
-  result = %*{"id": f.id, "title": atomTextToJson(f.title),
-    "updated": f.updated}
-  result["authors"] = personsToJson(f.authors, atomPersonToJson)
-  result["contributors"] = personsToJson(f.contributors, atomPersonToJson)
-  result["links"] = personsToJson(f.links, atomLinkToJson)
-  result["categories"] = personsToJson(f.categories, atomCategoryToJson)
+proc atomToJS(ctx: JSContextRef; f: AtomFeed; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "id", toJS(ctx, f.id), fname,
+      exception):
+    return nil
+  let title = atomTextToJS(ctx, f.title)
+  if title == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return nil
+  if not setPropChecked(ctx, obj, "title", title, fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "updated", toJS(ctx, f.updated),
+      fname, exception):
+    return nil
+  template setPeople(key: string; items, conv: untyped): untyped =
+    let arrVal = personsToJS(ctx, items, fname, exception, conv)
+    if arrVal == nil:
+      return nil
+    if not setPropChecked(ctx, obj, key, arrVal, fname, exception):
+      return nil
+  setPeople("authors", f.authors, atomPersonToJS)
+  setPeople("contributors", f.contributors, atomPersonToJS)
+  setPeople("links", f.links, atomLinkToJS)
+  setPeople("categories", f.categories, atomCategoryToJS)
   if f.subtitle.isSome:
-    result["subtitle"] = atomTextToJson(f.subtitle.get())
+    let s = atomTextToJS(ctx, f.subtitle.get())
+    if s == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "subtitle", s, fname, exception):
+      return nil
   if f.rights.isSome:
-    result["rights"] = atomTextToJson(f.rights.get())
+    let r = atomTextToJS(ctx, f.rights.get())
+    if r == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "rights", r, fname, exception):
+      return nil
   if f.generator.isSome:
     let g = f.generator.get()
-    var obj = %*{"value": g.value}
-    optStr(obj, "uri", g.uri)
-    optStr(obj, "version", g.version)
-    result["generator"] = obj
-  optStr(result, "icon", f.icon)
-  optStr(result, "logo", f.logo)
-  var entries = newJArray()
-  for e in f.entries:
-    entries.add(atomEntryToJson(e))
-  result["entries"] = entries
-  optStr(result, "lang", f.lang)
-  optStr(result, "base", f.base)
+    let gobj = newObject(ctx)
+    if not setPropChecked(ctx, gobj, "value", toJS(ctx, g.value), fname,
+        exception):
+      return nil
+    if not optSetStr(ctx, gobj, "uri", g.uri, fname, exception):
+      return nil
+    if not optSetStr(ctx, gobj, "version", g.version, fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "generator", gobj, fname,
+        exception):
+      return nil
+  if not optSetStr(ctx, obj, "icon", f.icon, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "logo", f.logo, fname, exception):
+    return nil
+  let entries = personsToJS(ctx, f.entries, fname, exception,
+    atomEntryToJS)
+  if entries == nil:
+    return nil
+  if not setPropChecked(ctx, obj, "entries", entries, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "lang", f.lang, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "base", f.base, fname, exception):
+    return nil
+  obj
 
 # -- JS entry points ---------------------------------------------------
 
@@ -141,7 +301,12 @@ init proc(module: Module) =
     module.registerFn parseRss(text: string):
       ## feed.parseRss(text) -> feed object with items[]
       try:
-        returnJson(ctx, rssToJson(parseRss(text)), "parseRss", exception)
+        let j = rssToJS(ctx, parseRss(text), "parseRss", exception)
+        if j == nil:
+          throwError(ctx, "parseRss: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "parseRss: " & e.msg, exception)
         nil
@@ -149,7 +314,12 @@ init proc(module: Module) =
     module.registerFn parseAtom(text: string):
       ## feed.parseAtom(text) -> feed object with entries[]
       try:
-        returnJson(ctx, atomToJson(parseAtom(text)), "parseAtom", exception)
+        let j = atomToJS(ctx, parseAtom(text), "parseAtom", exception)
+        if j == nil:
+          throwError(ctx, "parseAtom: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "parseAtom: " & e.msg, exception)
         nil

@@ -12,7 +12,7 @@
 # Accepts anything parseColor does: hex, rgb()/hsl()/hsv()/cmyk()/
 # lab()/lch()/oklab()/oklch() strings and named colors.
 
-import std/[json, math]
+import std/math
 
 import javascriptcore
 
@@ -20,9 +20,21 @@ import pkg/openparser/colors
 
 import ../bridge
 
-proc colorToJson(c: Color): JsonNode =
-  %*{"r": int(round(c.r * 255.0)), "g": int(round(c.g * 255.0)),
-    "b": int(round(c.b * 255.0)), "a": c.a}
+proc colorToJS(ctx: JSContextRef; c: Color; name: string;
+    exception: ptr JSValueRef): JSValueRef =
+  ## Builds {r, g, b, a} directly on the JS heap. returnJson would
+  ## build a JsonNode, stringify it, and have JSC re-parse the string:
+  ## three traversals plus two string conversions for four numbers.
+  let obj = newObject(ctx)
+  var ex: JSValueRef = nil
+  setProp(ctx, obj, "r", toJS(ctx, int(round(c.r * 255.0))), addr ex)
+  setProp(ctx, obj, "g", toJS(ctx, int(round(c.g * 255.0))), addr ex)
+  setProp(ctx, obj, "b", toJS(ctx, int(round(c.b * 255.0))), addr ex)
+  setProp(ctx, obj, "a", toJS(ctx, c.a), addr ex)
+  if ex != nil:
+    throwError(ctx, name & ": could not convert result to JS", exception)
+    return nil
+  obj
 
 proc numField(v: NimValue; field, name: string): float =
   ## Reads a numeric field as float. Raises on anything else.
@@ -70,7 +82,7 @@ init proc(module: Module) =
     module.registerFn parse(text: string):
       ## colors.parse(text) -> {r, g, b, a}
       try:
-        returnJson(ctx, colorToJson(parseColor(text)), "parse", exception)
+        colorToJS(ctx, parseColor(text), "parse", exception)
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
@@ -78,7 +90,7 @@ init proc(module: Module) =
     module.registerFn random():
       ## colors.random() -> {r, g, b, a}
       try:
-        returnJson(ctx, colorToJson(randomColor()), "random", exception)
+        colorToJS(ctx, randomColor(), "random", exception)
       except CatchableError as e:
         throwError(ctx, "random: " & e.msg, exception)
         nil
@@ -133,8 +145,7 @@ init proc(module: Module) =
       if not colorVal(color, "lighten", docBlock, ctx, exception, c):
         return nil
       try:
-        returnJson(ctx, colorToJson(c.lighten(amount)), "lighten",
-          exception)
+        colorToJS(ctx, c.lighten(amount), "lighten", exception)
       except CatchableError as e:
         throwError(ctx, "lighten: " & e.msg, exception)
         nil
@@ -145,7 +156,7 @@ init proc(module: Module) =
       if not colorVal(color, "darken", docBlock, ctx, exception, c):
         return nil
       try:
-        returnJson(ctx, colorToJson(c.darken(amount)), "darken", exception)
+        colorToJS(ctx, c.darken(amount), "darken", exception)
       except CatchableError as e:
         throwError(ctx, "darken: " & e.msg, exception)
         nil
@@ -156,8 +167,7 @@ init proc(module: Module) =
       if not colorVal(color, "saturate", docBlock, ctx, exception, c):
         return nil
       try:
-        returnJson(ctx, colorToJson(c.saturate(amount)), "saturate",
-          exception)
+        colorToJS(ctx, c.saturate(amount), "saturate", exception)
       except CatchableError as e:
         throwError(ctx, "saturate: " & e.msg, exception)
         nil
@@ -168,7 +178,7 @@ init proc(module: Module) =
       if not colorVal(color, "spin", docBlock, ctx, exception, c):
         return nil
       try:
-        returnJson(ctx, colorToJson(c.spin(amount)), "spin", exception)
+        colorToJS(ctx, c.spin(amount), "spin", exception)
       except CatchableError as e:
         throwError(ctx, "spin: " & e.msg, exception)
         nil
@@ -179,8 +189,7 @@ init proc(module: Module) =
       if not colorVal(color, "complement", docBlock, ctx, exception, c):
         return nil
       try:
-        returnJson(ctx, colorToJson(c.complement()), "complement",
-          exception)
+        colorToJS(ctx, c.complement(), "complement", exception)
       except CatchableError as e:
         throwError(ctx, "complement: " & e.msg, exception)
         nil
@@ -191,7 +200,7 @@ init proc(module: Module) =
       if not colorVal(color, "greyscale", docBlock, ctx, exception, c):
         return nil
       try:
-        returnJson(ctx, colorToJson(c.greyscale()), "greyscale", exception)
+        colorToJS(ctx, c.greyscale(), "greyscale", exception)
       except CatchableError as e:
         throwError(ctx, "greyscale: " & e.msg, exception)
         nil
@@ -205,7 +214,7 @@ init proc(module: Module) =
       if not colorVal(bVal, "mix", docBlock, ctx, exception, b):
         return nil
       try:
-        returnJson(ctx, colorToJson(mix(a, b, weight)), "mix", exception)
+        colorToJS(ctx, mix(a, b, weight), "mix", exception)
       except CatchableError as e:
         throwError(ctx, "mix: " & e.msg, exception)
         nil
@@ -216,10 +225,22 @@ init proc(module: Module) =
       if not colorVal(color, "triad", docBlock, ctx, exception, c):
         return nil
       try:
-        var arr = newJArray()
+        var vals: seq[JSValueRef] = @[]
         for m in triad(c):
-          arr.add(colorToJson(m))
-        returnJson(ctx, arr, "triad", exception)
+          let j = colorToJS(ctx, m, "triad", exception)
+          if j == nil:
+            return nil
+          vals.add(j)
+        var ex: JSValueRef = nil
+        let arr =
+          if vals.len > 0:
+            JSObjectMakeArray(ctx, csize_t(vals.len), addr vals[0], addr ex)
+          else:
+            JSObjectMakeArray(ctx, 0, nil, addr ex)
+        if ex != nil:
+          throwError(ctx, "triad: could not convert result to JS", exception)
+          return nil
+        arr
       except CatchableError as e:
         throwError(ctx, "triad: " & e.msg, exception)
         nil

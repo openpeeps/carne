@@ -10,7 +10,7 @@
 # spans are intra-line changed byte ranges for highlighting. Both
 # functions take an optional {context} options object (default 3).
 
-import std/[json, math, strutils]
+import std/[math, strutils]
 
 import javascriptcore
 
@@ -53,33 +53,105 @@ proc readOpts(ctx: JSContextRef; obj: JSValueRef;
   opts.context = c
   true
 
-proc diffToJson(d: Diff): JsonNode =
-  result = newJObject()
-  result["identical"] = %isIdentical(d)
-  result["binary"] = %d.binary
-  result["truncated"] = %d.truncated
-  result["stats"] = %*{"added": d.stats.added, "removed": d.stats.removed,
-    "changed": d.stats.changed, "hunks": d.stats.hunkCount,
-    "bytesAdded": d.stats.bytesAdded, "bytesRemoved": d.stats.bytesRemoved}
-  var hunks = newJArray()
+proc diffToJS(ctx: JSContextRef; d: Diff; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  ## Diff -> live JS value, no JsonNode middle layer.
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "identical", toJS(ctx, isIdentical(d)),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "binary", toJS(ctx, d.binary),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "truncated", toJS(ctx, d.truncated),
+      fname, exception):
+    return nil
+  let stats = newObject(ctx)
+  if not setPropChecked(ctx, stats, "added", toJS(ctx, d.stats.added),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, stats, "removed", toJS(ctx, d.stats.removed),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, stats, "changed", toJS(ctx, d.stats.changed),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, stats, "hunks", toJS(ctx, d.stats.hunkCount),
+      fname, exception):
+    return nil
+  if not setPropChecked(ctx, stats, "bytesAdded",
+      toJS(ctx, d.stats.bytesAdded), fname, exception):
+    return nil
+  if not setPropChecked(ctx, stats, "bytesRemoved",
+      toJS(ctx, d.stats.bytesRemoved), fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "stats", stats, fname, exception):
+    return nil
+  var hunkVals: seq[JSValueRef] = @[]
   for h in d.hunks:
-    var obj = newJObject()
-    obj["header"] = %renderHunkHeader(h).strip()
-    var lines = newJArray()
+    let hobj = newObject(ctx)
+    if not setPropChecked(ctx, hobj, "header",
+        toJS(ctx, renderHunkHeader(h).strip()), fname, exception):
+      return nil
+    var lineVals: seq[JSValueRef] = @[]
     for line in h.lines:
-      var ln = newJObject()
-      ln["kind"] = % $line.kind
+      let ln = newObject(ctx)
+      if not setPropChecked(ctx, ln, "kind", toJS(ctx, $line.kind),
+          fname, exception):
+        return nil
       let isA = line.kind == dlDelete
-      ln["text"] = %contentText(if isA: d.a.view else: d.b.view, line, isA)
+      if not setPropChecked(ctx, ln, "text",
+          toJS(ctx, contentText(if isA: d.a.view else: d.b.view, line,
+            isA)), fname, exception):
+        return nil
       if line.spans.len > 0:
-        var spans = newJArray()
+        var spanVals: seq[JSValueRef] = @[]
         for s in line.spans:
-          spans.add(%*{"start": s.start, "stop": s.stop})
-        ln["spans"] = spans
-      lines.add(ln)
-    obj["lines"] = lines
-    hunks.add(obj)
-  result["hunks"] = hunks
+          let sp = newObject(ctx)
+          if not setPropChecked(ctx, sp, "start", toJS(ctx, s.start),
+              fname, exception):
+            return nil
+          if not setPropChecked(ctx, sp, "stop", toJS(ctx, s.stop),
+              fname, exception):
+            return nil
+          spanVals.add(sp)
+        var spEx: JSValueRef = nil
+        let spans = JSObjectMakeArray(ctx, csize_t(spanVals.len),
+          addr spanVals[0], addr spEx)
+        if spEx != nil:
+          throwError(ctx, fname & ": could not convert result to JS",
+            exception)
+          return nil
+        if not setPropChecked(ctx, ln, "spans", spans, fname, exception):
+          return nil
+      lineVals.add(ln)
+    var lnEx: JSValueRef = nil
+    let lines =
+      if lineVals.len > 0:
+        JSObjectMakeArray(ctx, csize_t(lineVals.len), addr lineVals[0],
+          addr lnEx)
+      else:
+        JSObjectMakeArray(ctx, 0, nil, addr lnEx)
+    if lnEx != nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, hobj, "lines", lines, fname, exception):
+      return nil
+    hunkVals.add(hobj)
+  var hEx: JSValueRef = nil
+  let hunks =
+    if hunkVals.len > 0:
+      JSObjectMakeArray(ctx, csize_t(hunkVals.len), addr hunkVals[0],
+        addr hEx)
+    else:
+      JSObjectMakeArray(ctx, 0, nil, addr hEx)
+  if hEx != nil:
+    throwError(ctx, fname & ": could not convert result to JS", exception)
+    return nil
+  if not setPropChecked(ctx, obj, "hunks", hunks, fname, exception):
+    return nil
+  result = obj
 
 ## Builds the std/diff namespace object.
 init proc(module: Module) =
@@ -95,7 +167,12 @@ init proc(module: Module) =
       else:
         opts = DiffOptions()
       try:
-        returnJson(ctx, diffToJson(diff(a, b, opts)), "diff", exception)
+        let j = diffToJS(ctx, diff(a, b, opts), "diff", exception)
+        if j == nil:
+          throwError(ctx, "diff: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "diff: " & e.msg, exception)
         nil

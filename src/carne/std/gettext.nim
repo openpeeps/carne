@@ -12,7 +12,7 @@
 # a temp file (same bridge as std/csv). .mo is out of scope in v1
 # (binary input).
 
-import std/[json, os, strutils, tables]
+import std/[os, strutils, tables]
 
 import javascriptcore
 
@@ -52,26 +52,42 @@ proc closeTemp(tmp: string; cat: PoCatalog) =
   try: removeFile(tmp)
   except OSError: discard
 
-proc entryToJson(cat: PoCatalog; e: PoEntry): JsonNode =
-  result = newJObject()
-  result["msgid"] = %decodeField(cat, e.msgid)
+proc entryToJS(ctx: JSContextRef; cat: PoCatalog; e: PoEntry;
+    fname: string; exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "msgid",
+      toJS(ctx, decodeField(cat, e.msgid)), fname, exception):
+    return nil
   let plural = decodeField(cat, e.msgidPlural)
   if plural.len > 0:
-    result["msgidPlural"] = %plural
-  let ctx = decodeField(cat, e.msgctxt)
-  if ctx.len > 0:
-    result["msgctxt"] = %ctx
-  var forms = newJArray()
+    if not setPropChecked(ctx, obj, "msgidPlural", toJS(ctx, plural),
+        fname, exception):
+      return nil
+  let context = decodeField(cat, e.msgctxt)
+  if context.len > 0:
+    if not setPropChecked(ctx, obj, "msgctxt", toJS(ctx, context),
+        fname, exception):
+      return nil
+  var fvals: seq[JSValueRef] = @[]
   for m in e.msgstr:
-    forms.add(%decodeMsgStr(cat, e, m.idx))
-  result["msgstr"] = forms
+    fvals.add(toJS(ctx, decodeMsgStr(cat, e, m.idx)))
+  let forms = makeJSArray(ctx, fvals)
+  if forms == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return nil
+  if not setPropChecked(ctx, obj, "msgstr", forms, fname, exception):
+    return nil
   var fuzzy = false
   for c in e.comments:
     if c.kind == pckFlag and "fuzzy" in toString(cat, c.text):
       fuzzy = true
       break
   if fuzzy:
-    result["fuzzy"] = %true
+    if not setPropChecked(ctx, obj, "fuzzy", toJS(ctx, true), fname,
+        exception):
+      return nil
+  obj
 
 ## Builds the std/gettext namespace object.
 init proc(module: Module) =
@@ -84,19 +100,43 @@ init proc(module: Module) =
       if not openTemp(text, "parse", ctx, exception, tmp, cat, docBlock):
         return nil
       try:
-        var headers = newJObject()
+        let headers = newObject(ctx)
+        var hex: JSValueRef = nil
         for k, v in parsePoHeaders(cat):
-          headers[k] = %v
-        var entries = newJArray()
+          setProp(ctx, headers, k, toJS(ctx, v), addr hex)
+          if hex != nil:
+            closeTemp(tmp, cat)
+            throwError(ctx, "parse: could not convert result to JS",
+              exception)
+            return nil
+        var evals: seq[JSValueRef] = @[]
         for e in cat.entries:
           if e.obsolete:
             continue
           if decodeField(cat, e.msgid).len == 0:
             continue
-          entries.add(entryToJson(cat, e))
-        let node = %*{"headers": headers, "entries": entries}
+          let j = entryToJS(ctx, cat, e, "parse", exception)
+          if j == nil:
+            closeTemp(tmp, cat)
+            return nil
+          evals.add(j)
+        let entries = makeJSArray(ctx, evals)
+        if entries == nil:
+          closeTemp(tmp, cat)
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        let obj = newObject(ctx)
+        if not setPropChecked(ctx, obj, "headers", headers, "parse",
+            exception):
+          closeTemp(tmp, cat)
+          return nil
+        if not setPropChecked(ctx, obj, "entries", entries, "parse",
+            exception):
+          closeTemp(tmp, cat)
+          return nil
         closeTemp(tmp, cat)
-        returnJson(ctx, node, "parse", exception)
+        obj
       except CatchableError as e:
         closeTemp(tmp, cat)
         throwError(ctx, "parse: " & e.msg, exception)

@@ -20,8 +20,6 @@
 # to the top namespace only), with define-only `ctx.registerFn`
 # callbacks sharing one helper per operation.
 
-import std/json
-
 import javascriptcore
 
 import pkg/openparser/sql
@@ -31,18 +29,36 @@ import ../bridge
 const literalKinds = {nkIdent, nkQuotedIdent, nkStringLit, nkBitStringLit,
   nkHexStringLit, nkIntegerLit, nkNumericLit, nkPlaceholder, nkRaw}
 
-proc sqlToJson(n: SqlNode): JsonNode =
-  result = newJObject()
-  result["kind"] = %($n.kind)[2 .. ^1]
+proc sqlToJS(ctx: JSContextRef; n: SqlNode; name: string;
+    exception: ptr JSValueRef): JSValueRef =
+  ## SqlNode -> live JS value, no JsonNode middle layer.
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "kind", toJS(ctx, ($n.kind)[2 .. ^1]),
+      name, exception):
+    return nil
   if n.kind in literalKinds:
-    result["value"] = %n.strVal
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, n.strVal),
+        name, exception):
+      return nil
     if n.quote != qkNone:
-      result["quote"] = %($n.quote)[2 .. ^1]
+      if not setPropChecked(ctx, obj, "quote",
+          toJS(ctx, ($n.quote)[2 .. ^1]), name, exception):
+        return nil
   else:
-    var kids = newJArray()
+    var vals: seq[JSValueRef] = @[]
     for child in n.sons:
-      kids.add(sqlToJson(child))
-    result["children"] = kids
+      let j = sqlToJS(ctx, child, name, exception)
+      if j == nil:
+        return nil
+      vals.add(j)
+    let kids = makeJSArray(ctx, vals)
+    if kids == nil:
+      throwError(ctx, name & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "children", kids, name, exception):
+      return nil
+  result = obj
 
 proc sqlErr(ctx: JSContextRef; docBlock, name, detail: string;
     exception: ptr JSValueRef) =
@@ -55,7 +71,12 @@ proc sqlErr(ctx: JSContextRef; docBlock, name, detail: string;
 proc doParse(ctx: JSContextRef; text: string; driver: SqlDriver;
     name, docBlock: string; exception: ptr JSValueRef): JSValueRef =
   try:
-    returnJson(ctx, sqlToJson(parseSql(text, driver)), name, exception)
+    let j = sqlToJS(ctx, parseSql(text, driver), name, exception)
+    if j == nil:
+      sqlErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    j
   except CatchableError as e:
     # SqlParseError text starts with a newline + code snippet.
     sqlErr(ctx, docBlock, name, e.msg, exception)
@@ -65,12 +86,26 @@ proc doValidate(ctx: JSContextRef; text: string; driver: SqlDriver;
     name, docBlock: string; exception: ptr JSValueRef): JSValueRef =
   try:
     discard parseSql(text, driver)
-    returnJson(ctx, %*{"valid": true}, name, exception)
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "valid", toJS(ctx, true), name,
+        exception):
+      sqlErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    obj
   except CatchableError as e:
-    var obj = newJObject()
-    obj["valid"] = %false
-    obj["error"] = %e.msg
-    returnJson(ctx, obj, name, exception)
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "valid", toJS(ctx, false), name,
+        exception):
+      sqlErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "error", toJS(ctx, e.msg), name,
+        exception):
+      sqlErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    obj
 
 ## Builds the std/sql namespace object.
 init proc(module: Module) =

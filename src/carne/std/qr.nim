@@ -8,7 +8,7 @@
 # ecLevel is one of L/M/Q/H (default M). Decoding needs image input
 # and is out of scope in v1.
 
-import std/[json, strutils]
+import std/strutils
 
 import javascriptcore
 
@@ -63,8 +63,17 @@ init proc(module: Module) =
         var opts = defaultQrEncodeOptions()
         opts.ecLevel = level
         let m = encodeQr(text, opts)
-        returnJson(ctx, %*{"size": m.width, "svg": toSvg(m),
-          "terminal": toTerminal(m)}, "encode", exception)
+        let obj = newObject(ctx)
+        if not setPropChecked(ctx, obj, "size", toJS(ctx, m.width),
+            "encode", exception):
+          return nil
+        if not setPropChecked(ctx, obj, "svg", toJS(ctx, toSvg(m)),
+            "encode", exception):
+          return nil
+        if not setPropChecked(ctx, obj, "terminal",
+            toJS(ctx, toTerminal(m)), "encode", exception):
+          return nil
+        obj
       except CatchableError as e:
         throwError(ctx, "encode: " & e.msg, exception)
         nil

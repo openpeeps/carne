@@ -8,8 +8,12 @@
 # Dates serialize as {value: "20260101T100000Z", tzid?}, durations as
 # "P1DT2H" strings, persons as {uri, cn?, params?}. Unknown properties
 # ride along in extraProps and survive the roundtrip.
+#
+# stringify reads known keys only: unknown input keys are ignored, so
+# a stray reference cycle hiding behind an unknown key cannot hang it
+# (all followed paths are depth-capped).
 
-import std/[json, options]
+import std/[math, options]
 
 import javascriptcore
 
@@ -20,27 +24,78 @@ import ../bridge
 proc icalErr(msg: string): ref CatchableError =
   newException(CatchableError, msg)
 
-# -- typed model -> JsonNode ---------------------------------------------
+# -- typed model -> live JS ------------------------------------------------
 
-proc dtToJson(d: IcalDt): JsonNode =
-  result = %*{"value": formatIcalDateTime(d.dt)}
-  if d.tzid.isSome:
-    result["tzid"] = %d.tzid.get()
+proc optSetDt(ctx: JSContextRef; obj: JSObjectRef; key: string;
+    v: Option[IcalDt]; fname: string;
+    exception: ptr JSValueRef): bool =
+  if v.isNone:
+    return true
+  let d = v.get()
+  let dobj = newObject(ctx)
+  if not setPropChecked(ctx, dobj, "value",
+      toJS(ctx, formatIcalDateTime(d.dt)), fname, exception):
+    return false
+  if not optSetStr(ctx, dobj, "tzid", d.tzid, fname, exception):
+    return false
+  setPropChecked(ctx, obj, key, dobj, fname, exception)
 
-proc paramsToJson(params: seq[IcalParam]): JsonNode =
-  result = newJArray()
+proc dtToJS(ctx: JSContextRef; d: IcalDt; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "value",
+      toJS(ctx, formatIcalDateTime(d.dt)), fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "tzid", d.tzid, fname, exception):
+    return nil
+  obj
+
+proc paramsToJS(ctx: JSContextRef; params: seq[IcalParam]; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  var vals: seq[JSValueRef] = @[]
   for p in params:
-    var values = newJArray()
+    var vvals: seq[JSValueRef] = @[]
     for v in p.values:
-      values.add(%v)
-    result.add(%*{"name": p.name, "values": values})
+      vvals.add(toJS(ctx, v))
+    let values = makeJSArray(ctx, vvals)
+    if values == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "name", toJS(ctx, p.name), fname,
+        exception):
+      return nil
+    if not setPropChecked(ctx, obj, "values", values, fname, exception):
+      return nil
+    vals.add(obj)
+  makeJSArray(ctx, vals)
 
-proc personToJson(p: IcalPerson): JsonNode =
-  result = %*{"uri": p.uri}
-  if p.cn.isSome:
-    result["cn"] = %p.cn.get()
+proc personToJS(ctx: JSContextRef; p: IcalPerson; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "uri", toJS(ctx, p.uri), fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "cn", p.cn, fname, exception):
+    return nil
   if p.params.len > 0:
-    result["params"] = paramsToJson(p.params)
+    let prm = paramsToJS(ctx, p.params, fname, exception)
+    if prm == nil:
+      return nil
+    if not setPropChecked(ctx, obj, "params", prm, fname, exception):
+      return nil
+  obj
+
+proc optSetPerson(ctx: JSContextRef; obj: JSObjectRef; key: string;
+    v: Option[IcalPerson]; fname: string;
+    exception: ptr JSValueRef): bool =
+  if v.isNone:
+    return true
+  let p = personToJS(ctx, v.get(), fname, exception)
+  if p == nil:
+    return false
+  setPropChecked(ctx, obj, key, p, fname, exception)
 
 proc formatDur(d: IcalDuration): string =
   result = if d.negative: "-P" else: "P"
@@ -60,311 +115,622 @@ proc formatDur(d: IcalDuration): string =
   if result == "P" or result == "-P":
     result &= "T0S"
 
-proc triggerToJson(t: IcalTrigger): JsonNode =
+proc triggerToJS(ctx: JSContextRef; t: IcalTrigger; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
   case t.kind
   of trkRelative:
-    %*{"kind": "relative", "duration": formatDur(t.dur)}
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "kind", toJS(ctx, "relative"),
+        fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "duration",
+        toJS(ctx, formatDur(t.dur)), fname, exception):
+      return nil
+    obj
   of trkAbsolute:
-    %*{"kind": "absolute", "dateTime": formatIcalDateTime(t.dt)}
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "kind", toJS(ctx, "absolute"),
+        fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "dateTime",
+        toJS(ctx, formatIcalDateTime(t.dt)), fname, exception):
+      return nil
+    obj
 
-proc alarmToJson(a: IcalAlarm): JsonNode =
-  result = %*{"action": a.action}
-  if a.trigger.isSome:
-    result["trigger"] = triggerToJson(a.trigger.get())
-  if a.description.isSome:
-    result["description"] = %a.description.get()
-  if a.summary.isSome:
-    result["summary"] = %a.summary.get()
-  if a.repeatCount.isSome:
-    result["repeat"] = %a.repeatCount.get()
-  if a.duration.isSome:
-    result["duration"] = %formatDur(a.duration.get())
-  var attendees = newJArray()
-  for p in a.attendees:
-    attendees.add(personToJson(p))
-  result["attendees"] = attendees
+proc seqToJS[T](ctx: JSContextRef; items: seq[T]; fname: string;
+    exception: ptr JSValueRef;
+    conv: proc(ctx: JSContextRef; x: T; fname: string;
+      exception: ptr JSValueRef): JSValueRef): JSValueRef =
+  var vals: seq[JSValueRef] = @[]
+  for item in items:
+    let j = conv(ctx, item, fname, exception)
+    if j == nil:
+      return nil
+    vals.add(j)
+  let arr = makeJSArray(ctx, vals)
+  if arr == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return nil
+  arr
 
-proc propToJson(p: IcalProp): JsonNode =
-  %*{"name": p.name, "params": paramsToJson(p.params), "value": p.value}
-
-proc personsToJson(persons: seq[IcalPerson]): JsonNode =
-  result = newJArray()
-  for p in persons:
-    result.add(personToJson(p))
-
-proc strsToJson(strs: seq[string]): JsonNode =
-  result = newJArray()
+proc strsToJS(ctx: JSContextRef; strs: seq[string]): JSValueRef =
+  var vals: seq[JSValueRef] = @[]
   for s in strs:
-    result.add(%s)
+    vals.add(toJS(ctx, s))
+  makeJSArray(ctx, vals)
 
-proc dtsToJson(dts: seq[IcalDt]): JsonNode =
-  result = newJArray()
-  for d in dts:
-    result.add(dtToJson(d))
+proc alarmToJS(ctx: JSContextRef; a: IcalAlarm; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "action", toJS(ctx, a.action), fname,
+      exception):
+    return nil
+  if a.trigger.isSome:
+    let t = triggerToJS(ctx, a.trigger.get(), fname, exception)
+    if t == nil:
+      return nil
+    if not setPropChecked(ctx, obj, "trigger", t, fname, exception):
+      return nil
+  if not optSetStr(ctx, obj, "description", a.description, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "summary", a.summary, fname, exception):
+    return nil
+  if a.repeatCount.isSome:
+    if not setPropChecked(ctx, obj, "repeat",
+        toJS(ctx, a.repeatCount.get()), fname, exception):
+      return nil
+  if a.duration.isSome:
+    if not setPropChecked(ctx, obj, "duration",
+        toJS(ctx, formatDur(a.duration.get())), fname, exception):
+      return nil
+  let attendees = seqToJS(ctx, a.attendees, fname, exception, personToJS)
+  if attendees == nil:
+    return nil
+  if not setPropChecked(ctx, obj, "attendees", attendees, fname,
+      exception):
+    return nil
+  obj
 
-proc alarmsToJson(alarms: seq[IcalAlarm]): JsonNode =
-  result = newJArray()
-  for a in alarms:
-    result.add(alarmToJson(a))
+proc propToJS(ctx: JSContextRef; p: IcalProp; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "name", toJS(ctx, p.name), fname,
+      exception):
+    return nil
+  let prm = paramsToJS(ctx, p.params, fname, exception)
+  if prm == nil:
+    return nil
+  if not setPropChecked(ctx, obj, "params", prm, fname, exception):
+    return nil
+  if not setPropChecked(ctx, obj, "value", toJS(ctx, p.value), fname,
+      exception):
+    return nil
+  obj
 
-proc propsToJson(props: seq[IcalProp]): JsonNode =
-  result = newJArray()
-  for p in props:
-    result.add(propToJson(p))
+proc dtsToJS(ctx: JSContextRef; dts: seq[IcalDt]; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  seqToJS(ctx, dts, fname, exception,
+    proc(ctx: JSContextRef; d: IcalDt; fname: string;
+      exception: ptr JSValueRef): JSValueRef =
+      dtToJS(ctx, d, fname, exception))
 
-proc optStrToJson(obj: JsonNode; key: string; v: Option[string]) =
-  if v.isSome:
-    obj[key] = %v.get()
+proc alarmsToJS(ctx: JSContextRef; alarms: seq[IcalAlarm]; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  seqToJS(ctx, alarms, fname, exception, alarmToJS)
 
-proc optIntToJson(obj: JsonNode; key: string; v: Option[int]) =
-  if v.isSome:
-    obj[key] = %v.get()
+proc propsToJS(ctx: JSContextRef; props: seq[IcalProp]; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  seqToJS(ctx, props, fname, exception, propToJS)
 
-proc optDtToJson(obj: JsonNode; key: string; v: Option[IcalDt]) =
-  if v.isSome:
-    obj[key] = dtToJson(v.get())
+proc setSeqField(ctx: JSContextRef; obj: JSObjectRef; key: string;
+    arr: JSValueRef; fname: string;
+    exception: ptr JSValueRef): bool =
+  ## Always-present sequence field (documented shape).
+  if arr == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return false
+  setPropChecked(ctx, obj, key, arr, fname, exception)
 
-proc optPersonToJson(obj: JsonNode; key: string; v: Option[IcalPerson]) =
-  if v.isSome:
-    obj[key] = personToJson(v.get())
-
-proc eventToJson(e: IcalEvent): JsonNode =
-  result = %*{"uid": e.uid}
-  optDtToJson(result, "dtstamp", e.dtstamp)
-  optDtToJson(result, "dtstart", e.dtStart)
-  optDtToJson(result, "dtend", e.dtEnd)
+proc eventToJS(ctx: JSContextRef; e: IcalEvent; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "uid", toJS(ctx, e.uid), fname,
+      exception):
+    return nil
+  if not optSetDt(ctx, obj, "dtstamp", e.dtstamp, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "dtstart", e.dtStart, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "dtend", e.dtEnd, fname, exception):
+    return nil
   if e.duration.isSome:
-    result["duration"] = %formatDur(e.duration.get())
-  optStrToJson(result, "summary", e.summary)
-  optStrToJson(result, "description", e.description)
-  optStrToJson(result, "location", e.location)
-  optStrToJson(result, "status", e.status)
-  optStrToJson(result, "transparency", e.transparency)
-  optStrToJson(result, "classification", e.classification)
-  optIntToJson(result, "priority", e.priority)
-  optIntToJson(result, "sequence", e.sequenceNum)
-  optDtToJson(result, "created", e.created)
-  optDtToJson(result, "lastModified", e.lastModified)
-  optStrToJson(result, "url", e.url)
-  optPersonToJson(result, "organizer", e.organizer)
-  result["attendees"] = personsToJson(e.attendees)
-  result["categories"] = strsToJson(e.categories)
-  optStrToJson(result, "rrule", e.rrule)
-  result["exdates"] = dtsToJson(e.exdates)
-  result["attachments"] = strsToJson(e.attachments)
-  optDtToJson(result, "recurrenceId", e.recurrenceId)
-  result["alarms"] = alarmsToJson(e.alarms)
+    if not setPropChecked(ctx, obj, "duration",
+        toJS(ctx, formatDur(e.duration.get())), fname, exception):
+      return nil
+  if not optSetStr(ctx, obj, "summary", e.summary, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "description", e.description, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "location", e.location, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "status", e.status, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "transparency", e.transparency, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "classification", e.classification,
+      fname, exception):
+    return nil
+  if e.priority.isSome:
+    if not setPropChecked(ctx, obj, "priority",
+        toJS(ctx, e.priority.get()), fname, exception):
+      return nil
+  if e.sequenceNum.isSome:
+    if not setPropChecked(ctx, obj, "sequence",
+        toJS(ctx, e.sequenceNum.get()), fname, exception):
+      return nil
+  if not optSetDt(ctx, obj, "created", e.created, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "lastModified", e.lastModified, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "url", e.url, fname, exception):
+    return nil
+  if not optSetPerson(ctx, obj, "organizer", e.organizer, fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "attendees",
+      seqToJS(ctx, e.attendees, fname, exception, personToJS), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "categories", strsToJS(ctx, e.categories),
+      fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "rrule", e.rrule, fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "exdates",
+      dtsToJS(ctx, e.exdates, fname, exception), fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "attachments",
+      strsToJS(ctx, e.attachments), fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "recurrenceId", e.recurrenceId, fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "alarms",
+      alarmsToJS(ctx, e.alarms, fname, exception), fname, exception):
+    return nil
   if e.extraProps.len > 0:
-    result["extraProps"] = propsToJson(e.extraProps)
+    if not setSeqField(ctx, obj, "extraProps",
+        propsToJS(ctx, e.extraProps, fname, exception), fname, exception):
+      return nil
+  obj
 
-proc todoToJson(t: IcalTodo): JsonNode =
-  result = %*{"uid": t.uid}
-  optDtToJson(result, "dtstamp", t.dtstamp)
-  optDtToJson(result, "dtstart", t.dtStart)
-  optDtToJson(result, "due", t.due)
-  optDtToJson(result, "completed", t.completed)
-  optStrToJson(result, "summary", t.summary)
-  optStrToJson(result, "description", t.description)
-  optStrToJson(result, "location", t.location)
-  optStrToJson(result, "status", t.status)
-  optStrToJson(result, "classification", t.classification)
-  optIntToJson(result, "priority", t.priority)
-  optIntToJson(result, "sequence", t.sequenceNum)
-  optDtToJson(result, "created", t.created)
-  optDtToJson(result, "lastModified", t.lastModified)
-  optStrToJson(result, "url", t.url)
-  optPersonToJson(result, "organizer", t.organizer)
-  result["attendees"] = personsToJson(t.attendees)
-  result["categories"] = strsToJson(t.categories)
-  optStrToJson(result, "rrule", t.rrule)
-  optIntToJson(result, "percentComplete", t.percentComplete)
-  result["alarms"] = alarmsToJson(t.alarms)
+proc todoToJS(ctx: JSContextRef; t: IcalTodo; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "uid", toJS(ctx, t.uid), fname,
+      exception):
+    return nil
+  if not optSetDt(ctx, obj, "dtstamp", t.dtstamp, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "dtstart", t.dtStart, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "due", t.due, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "completed", t.completed, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "summary", t.summary, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "description", t.description, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "location", t.location, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "status", t.status, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "classification", t.classification,
+      fname, exception):
+    return nil
+  if t.priority.isSome:
+    if not setPropChecked(ctx, obj, "priority",
+        toJS(ctx, t.priority.get()), fname, exception):
+      return nil
+  if t.sequenceNum.isSome:
+    if not setPropChecked(ctx, obj, "sequence",
+        toJS(ctx, t.sequenceNum.get()), fname, exception):
+      return nil
+  if not optSetDt(ctx, obj, "created", t.created, fname, exception):
+    return nil
+  if not optSetDt(ctx, obj, "lastModified", t.lastModified, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "url", t.url, fname, exception):
+    return nil
+  if not optSetPerson(ctx, obj, "organizer", t.organizer, fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "attendees",
+      seqToJS(ctx, t.attendees, fname, exception, personToJS), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "categories", strsToJS(ctx, t.categories),
+      fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "rrule", t.rrule, fname, exception):
+    return nil
+  if t.percentComplete.isSome:
+    if not setPropChecked(ctx, obj, "percentComplete",
+        toJS(ctx, t.percentComplete.get()), fname, exception):
+      return nil
+  if not setSeqField(ctx, obj, "alarms",
+      alarmsToJS(ctx, t.alarms, fname, exception), fname, exception):
+    return nil
   if t.extraProps.len > 0:
-    result["extraProps"] = propsToJson(t.extraProps)
+    if not setSeqField(ctx, obj, "extraProps",
+        propsToJS(ctx, t.extraProps, fname, exception), fname, exception):
+      return nil
+  obj
 
-proc journalToJson(j: IcalJournal): JsonNode =
-  result = %*{"uid": j.uid}
-  optDtToJson(result, "dtstamp", j.dtstamp)
-  optStrToJson(result, "summary", j.summary)
-  optStrToJson(result, "description", j.description)
-  optStrToJson(result, "status", j.status)
-  optStrToJson(result, "classification", j.classification)
-  optPersonToJson(result, "organizer", j.organizer)
-  result["categories"] = strsToJson(j.categories)
-  result["attendees"] = personsToJson(j.attendees)
+proc journalToJS(ctx: JSContextRef; j: IcalJournal; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "uid", toJS(ctx, j.uid), fname,
+      exception):
+    return nil
+  if not optSetDt(ctx, obj, "dtstamp", j.dtstamp, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "summary", j.summary, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "description", j.description, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "status", j.status, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "classification", j.classification,
+      fname, exception):
+    return nil
+  if not optSetPerson(ctx, obj, "organizer", j.organizer, fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "categories", strsToJS(ctx, j.categories),
+      fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "attendees",
+      seqToJS(ctx, j.attendees, fname, exception, personToJS), fname,
+      exception):
+    return nil
   if j.extraProps.len > 0:
-    result["extraProps"] = propsToJson(j.extraProps)
+    if not setSeqField(ctx, obj, "extraProps",
+        propsToJS(ctx, j.extraProps, fname, exception), fname, exception):
+      return nil
+  obj
 
-proc tzObsToJson(o: IcalTzObservance): JsonNode =
-  result = newJObject()
+proc tzObsToJS(ctx: JSContextRef; o: IcalTzObservance; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
   if o.dtstart.isSome:
-    result["dtstart"] = %formatIcalDateTime(o.dtstart.get())
-  optStrToJson(result, "offsetFrom", o.offsetFrom)
-  optStrToJson(result, "offsetTo", o.offsetTo)
-  result["names"] = strsToJson(o.names)
-  optStrToJson(result, "rrule", o.rrule)
+    if not setPropChecked(ctx, obj, "dtstart",
+        toJS(ctx, formatIcalDateTime(o.dtstart.get())), fname, exception):
+      return nil
+  if not optSetStr(ctx, obj, "offsetFrom", o.offsetFrom, fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "offsetTo", o.offsetTo, fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "names", strsToJS(ctx, o.names), fname,
+      exception):
+    return nil
+  if not optSetStr(ctx, obj, "rrule", o.rrule, fname, exception):
+    return nil
   if o.extraProps.len > 0:
-    result["extraProps"] = propsToJson(o.extraProps)
+    if not setSeqField(ctx, obj, "extraProps",
+        propsToJS(ctx, o.extraProps, fname, exception), fname, exception):
+      return nil
+  obj
 
-proc tzToJson(t: IcalTimezone): JsonNode =
-  var standard = newJArray()
-  for o in t.standard:
-    standard.add(tzObsToJson(o))
-  var daylight = newJArray()
-  for o in t.daylight:
-    daylight.add(tzObsToJson(o))
-  result = %*{"tzid": t.tzid, "standard": standard, "daylight": daylight}
+proc tzToJS(ctx: JSContextRef; t: IcalTimezone; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "tzid", toJS(ctx, t.tzid), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "standard",
+      seqToJS(ctx, t.standard, fname, exception, tzObsToJS), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "daylight",
+      seqToJS(ctx, t.daylight, fname, exception, tzObsToJS), fname,
+      exception):
+    return nil
   if t.extraProps.len > 0:
-    result["extraProps"] = propsToJson(t.extraProps)
+    if not setSeqField(ctx, obj, "extraProps",
+        propsToJS(ctx, t.extraProps, fname, exception), fname, exception):
+      return nil
+  obj
 
-proc genericToJson(g: IcalGenericSub): JsonNode =
-  var props = newJArray()
-  for p in g.props:
-    props.add(propToJson(p))
-  var children = newJArray()
-  for c in g.children:
-    children.add(genericToJson(c))
-  %*{"name": g.name, "props": props, "children": children}
+proc genericToJS(ctx: JSContextRef; g: IcalGenericSub; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "name", toJS(ctx, g.name), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "props",
+      propsToJS(ctx, g.props, fname, exception), fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "children",
+      seqToJS(ctx, g.children, fname, exception, genericToJS), fname,
+      exception):
+    return nil
+  obj
 
-proc otherToJson(o: IcalOther): JsonNode =
-  var props = newJArray()
-  for p in o.props:
-    props.add(propToJson(p))
-  var children = newJArray()
-  for c in o.children:
-    children.add(genericToJson(c))
-  %*{"name": o.name, "props": props, "children": children}
+proc otherToJS(ctx: JSContextRef; o: IcalOther; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "name", toJS(ctx, o.name), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "props",
+      propsToJS(ctx, o.props, fname, exception), fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "children",
+      seqToJS(ctx, o.children, fname, exception, genericToJS), fname,
+      exception):
+    return nil
+  obj
 
-proc calToJson(cal: IcalCalendar): JsonNode =
-  result = newJObject()
-  optStrToJson(result, "prodid", cal.prodId)
-  optStrToJson(result, "version", cal.version)
-  optStrToJson(result, "calscale", cal.calscale)
-  optStrToJson(result, "method", cal.`method`)
+proc calToJS(ctx: JSContextRef; cal: IcalCalendar; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not optSetStr(ctx, obj, "prodid", cal.prodId, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "version", cal.version, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "calscale", cal.calscale, fname, exception):
+    return nil
+  if not optSetStr(ctx, obj, "method", cal.`method`, fname, exception):
+    return nil
   if cal.extraProps.len > 0:
-    result["extraProps"] = propsToJson(cal.extraProps)
-  var events = newJArray()
-  var todos = newJArray()
-  var journals = newJArray()
-  var timezones = newJArray()
-  var others = newJArray()
+    if not setSeqField(ctx, obj, "extraProps",
+        propsToJS(ctx, cal.extraProps, fname, exception), fname,
+        exception):
+      return nil
+  var events, todos, journals, timezones, others: seq[JSValueRef] = @[]
   for c in cal.components:
     case c.kind
-    of cckEvent: events.add(eventToJson(c.event))
-    of cckTodo: todos.add(todoToJson(c.todo))
-    of cckJournal: journals.add(journalToJson(c.journal))
-    of cckTimezone: timezones.add(tzToJson(c.timezone))
-    of cckOther: others.add(otherToJson(c.other))
-  result["events"] = events
-  result["todos"] = todos
-  result["journals"] = journals
-  result["timezones"] = timezones
-  result["others"] = others
+    of cckEvent:
+      let j = eventToJS(ctx, c.event, fname, exception)
+      if j == nil:
+        return nil
+      events.add(j)
+    of cckTodo:
+      let j = todoToJS(ctx, c.todo, fname, exception)
+      if j == nil:
+        return nil
+      todos.add(j)
+    of cckJournal:
+      let j = journalToJS(ctx, c.journal, fname, exception)
+      if j == nil:
+        return nil
+      journals.add(j)
+    of cckTimezone:
+      let j = tzToJS(ctx, c.timezone, fname, exception)
+      if j == nil:
+        return nil
+      timezones.add(j)
+    of cckOther:
+      let j = otherToJS(ctx, c.other, fname, exception)
+      if j == nil:
+        return nil
+      others.add(j)
+  if not setSeqField(ctx, obj, "events", makeJSArray(ctx, events), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "todos", makeJSArray(ctx, todos), fname,
+      exception):
+    return nil
+  if not setSeqField(ctx, obj, "journals", makeJSArray(ctx, journals),
+      fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "timezones", makeJSArray(ctx, timezones),
+      fname, exception):
+    return nil
+  if not setSeqField(ctx, obj, "others", makeJSArray(ctx, others),
+      fname, exception):
+    return nil
+  obj
 
-# -- JsonNode -> typed model ---------------------------------------------
+# -- live JS -> typed model ------------------------------------------------
 
-proc fieldStr(o: JsonNode; key: string): Option[string] =
-  if o.hasKey(key):
-    let v = o[key]
-    if v.kind != JString:
-      raise icalErr("\"" & key & "\" must be a string")
-    some(v.getStr())
-  else:
-    none(string)
+proc rawHas(ctx: JSContextRef; obj: JSValueRef; key: string): bool =
+  ## Present and not undefined (JSON drops undefined keys, so the old
+  ## readers never saw them either).
+  let k = newJSString(key)
+  defer: JSStringRelease(k)
+  var ex: JSValueRef = nil
+  let prop = JSObjectGetProperty(ctx, obj, k, addr ex)
+  ex == nil and prop != nil and
+    JSValueGetType(ctx, prop) != kJSTypeUndefined
 
-proc fieldInt(o: JsonNode; key: string): Option[int] =
-  if o.hasKey(key):
-    let v = o[key]
-    if v.kind != JInt:
-      raise icalErr("\"" & key & "\" must be an integer")
-    some(v.getInt())
-  else:
-    none(int)
+proc rawGet(ctx: JSContextRef; obj: JSValueRef; key: string): JSValueRef =
+  ## Raw required property. Raises on throwing getters (internal).
+  let k = newJSString(key)
+  defer: JSStringRelease(k)
+  var ex: JSValueRef = nil
+  let prop = JSObjectGetProperty(ctx, obj, k, addr ex)
+  if ex != nil or prop == nil:
+    raise icalErr("has an unreadable property \"" & key & "\"")
+  prop
 
-proc fieldDt(o: JsonNode; key: string): Option[IcalDt] =
-  if not o.hasKey(key):
-    return none(IcalDt)
-  let v = o[key]
-  if v.kind != JObject or not v.hasKey("value") or v["value"].kind != JString:
+proc requireObj(ctx: JSContextRef; v: JSValueRef; what: string): JSValueRef =
+  ## Plain-object check with the caller's shape message.
+  if v == nil or JSValueGetType(ctx, v) != kJSTypeObject or
+      JSValueIsArray(ctx, v) or JSObjectIsFunction(ctx, v):
+    raise icalErr(what)
+  v
+
+proc readStr(ctx: JSContextRef; v: JSValueRef; what: string): string =
+  if v == nil or JSValueGetType(ctx, v) != kJSTypeString:
+    raise icalErr(what)
+  var ex: JSValueRef = nil
+  let s = JSValueToStringCopy(ctx, v, addr ex)
+  if s == nil:
+    raise icalErr(what)
+  defer: JSStringRelease(s)
+  $s
+
+proc readOptStr(ctx: JSContextRef; obj: JSValueRef;
+    key: string): Option[string] =
+  if not rawHas(ctx, obj, key):
+    return none(string)
+  some(readStr(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be a string"))
+
+proc readOptInt(ctx: JSContextRef; obj: JSValueRef;
+    key: string): Option[int] =
+  if not rawHas(ctx, obj, key):
+    return none(int)
+  let v = rawGet(ctx, obj, key)
+  if JSValueGetType(ctx, v) != kJSTypeNumber:
+    raise icalErr("\"" & key & "\" must be an integer")
+  var ex: JSValueRef = nil
+  let f = JSValueToNumber(ctx, v, addr ex)
+  if ex != nil or f != trunc(f) or abs(f) >= 9223372036854775808.0:
+    raise icalErr("\"" & key & "\" must be an integer")
+  some(int(f))
+
+proc rawLen(ctx: JSContextRef; v: JSValueRef; what: string): int =
+  var ex: JSValueRef = nil
+  let lenKey = newJSString("length")
+  defer: JSStringRelease(lenKey)
+  let lenV = JSObjectGetProperty(ctx, v, lenKey, addr ex)
+  if ex != nil or lenV == nil:
+    raise icalErr(what)
+  var ex2: JSValueRef = nil
+  let n = int(JSValueToNumber(ctx, lenV, addr ex2))
+  if ex2 != nil or n < 0:
+    raise icalErr(what)
+  n
+
+proc rawIndex(ctx: JSContextRef; v: JSValueRef; idx: int;
+    what: string): JSValueRef =
+  var eEx: JSValueRef = nil
+  let item = JSObjectGetPropertyAtIndex(ctx, v, cuint(idx), addr eEx)
+  if eEx != nil or item == nil:
+    raise icalErr(what)
+  item
+
+proc requireArr(ctx: JSContextRef; v: JSValueRef; what: string): JSValueRef =
+  if v == nil or JSValueGetType(ctx, v) != kJSTypeObject or
+      not JSValueIsArray(ctx, v):
+    raise icalErr(what)
+  v
+
+proc readStrs(ctx: JSContextRef; obj: JSValueRef;
+    key: string): seq[string] =
+  if not rawHas(ctx, obj, key):
+    return @[]
+  let v = requireArr(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be an array")
+  let n = rawLen(ctx, v, "\"" & key & "\" must be an array")
+  for idx in 0 ..< n:
+    result.add(readStr(ctx, rawIndex(ctx, v, idx,
+      "\"" & key & "\" must list strings"),
+      "\"" & key & "\" must list strings"))
+
+proc readParams(ctx: JSContextRef; v: JSValueRef): seq[IcalParam] =
+  let arr = requireArr(ctx, v, "\"params\" must be an array")
+  let n = rawLen(ctx, arr, "\"params\" must be an array")
+  for idx in 0 ..< n:
+    let item = requireObj(ctx, rawIndex(ctx, arr, idx,
+      "params entries need {name, values}"),
+      "params entries need {name, values}")
+    if not rawHas(ctx, item, "name") or not rawHas(ctx, item, "values"):
+      raise icalErr("params entries need {name, values}")
+    let name = readStr(ctx, rawGet(ctx, item, "name"),
+      "params entries need {name, values}")
+    let vv = requireArr(ctx, rawGet(ctx, item, "values"),
+      "\"values\" must be an array")
+    let vn = rawLen(ctx, vv, "\"values\" must be an array")
+    var values: seq[string] = @[]
+    for j in 0 ..< vn:
+      values.add(readStr(ctx, rawIndex(ctx, vv, j,
+        "\"values\" must list strings"),
+        "\"values\" must list strings"))
+    result.add(IcalParam(name: name, values: values))
+
+proc readOptParams(ctx: JSContextRef; obj: JSValueRef;
+    key: string): seq[IcalParam] =
+  if not rawHas(ctx, obj, key):
+    return @[]
+  readParams(ctx, rawGet(ctx, obj, key))
+
+proc readDt(ctx: JSContextRef; v: JSValueRef; key: string): IcalDt =
+  let o = requireObj(ctx, v, "\"" & key & "\" must be {value, tzid?}")
+  if not rawHas(ctx, o, "value"):
     raise icalErr("\"" & key & "\" must be {value, tzid?}")
   try:
-    var d = IcalDt(dt: parseIcalDateTime(v["value"].getStr()))
-    let tz = fieldStr(v, "tzid")
+    var d = IcalDt(dt: parseIcalDateTime(readStr(ctx,
+      rawGet(ctx, o, "value"), "\"" & key & "\" must be {value, tzid?}")))
+    let tz = readOptStr(ctx, o, "tzid")
     if tz.isSome:
       d.tzid = tz
-    some(d)
+    d
   except CatchableError as e:
     raise icalErr("\"" & key & "\": " & e.msg)
 
-proc fieldStrs(o: JsonNode; key: string): seq[string] =
-  if not o.hasKey(key):
-    return @[]
-  let v = o[key]
-  if v.kind != JArray:
-    raise icalErr("\"" & key & "\" must be an array")
-  for item in v:
-    if item.kind != JString:
-      raise icalErr("\"" & key & "\" must list strings")
-    result.add(item.getStr())
+proc readOptDt(ctx: JSContextRef; obj: JSValueRef;
+    key: string): Option[IcalDt] =
+  if not rawHas(ctx, obj, key):
+    return none(IcalDt)
+  some(readDt(ctx, rawGet(ctx, obj, key), key))
 
-proc fieldParams(v: JsonNode): seq[IcalParam] =
-  if v.kind != JArray:
-    raise icalErr("\"params\" must be an array")
-  for item in v:
-    if item.kind != JObject or not item.hasKey("name") or
-        not item.hasKey("values"):
-      raise icalErr("params entries need {name, values}")
-    var values: seq[string] = @[]
-    if item["values"].kind != JArray:
-      raise icalErr("\"values\" must be an array")
-    for s in item["values"]:
-      if s.kind != JString:
-        raise icalErr("\"values\" must list strings")
-      values.add(s.getStr())
-    result.add(IcalParam(name: item["name"].getStr(), values: values))
-
-proc fieldPerson(o: JsonNode; key: string): Option[IcalPerson] =
-  if not o.hasKey(key):
-    return none(IcalPerson)
-  let v = o[key]
-  if v.kind != JObject or not v.hasKey("uri"):
+proc readPerson(ctx: JSContextRef; v: JSValueRef; key: string): IcalPerson =
+  let o = requireObj(ctx, v, "\"" & key & "\" must be {uri, cn?, params?}")
+  if not rawHas(ctx, o, "uri"):
     raise icalErr("\"" & key & "\" must be {uri, cn?, params?}")
-  var p = IcalPerson(uri: v["uri"].getStr())
-  p.cn = fieldStr(v, "cn")
-  if v.hasKey("params"):
-    p.params = fieldParams(v["params"])
-  some(p)
+  var p = IcalPerson(uri: readStr(ctx, rawGet(ctx, o, "uri"),
+    "\"" & key & "\" must be {uri, cn?, params?}"))
+  p.cn = readOptStr(ctx, o, "cn")
+  if rawHas(ctx, o, "params"):
+    p.params = readParams(ctx, rawGet(ctx, o, "params"))
+  p
 
-proc fieldPersons(o: JsonNode; key: string): seq[IcalPerson] =
-  if not o.hasKey(key):
+proc readOptPerson(ctx: JSContextRef; obj: JSValueRef;
+    key: string): Option[IcalPerson] =
+  if not rawHas(ctx, obj, key):
+    return none(IcalPerson)
+  some(readPerson(ctx, rawGet(ctx, obj, key), key))
+
+proc readPersons(ctx: JSContextRef; obj: JSValueRef;
+    key: string): seq[IcalPerson] =
+  if not rawHas(ctx, obj, key):
     return @[]
-  let v = o[key]
-  if v.kind != JArray:
-    raise icalErr("\"" & key & "\" must be an array")
-  for item in v:
-    if item.kind != JObject or not item.hasKey("uri"):
-      raise icalErr("\"" & key & "\" entries must be {uri, ...}")
-    var p = IcalPerson(uri: item["uri"].getStr())
-    p.cn = fieldStr(item, "cn")
-    if item.hasKey("params"):
-      p.params = fieldParams(item["params"])
-    result.add(p)
+  let v = requireArr(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be an array")
+  let n = rawLen(ctx, v, "\"" & key & "\" must be an array")
+  for idx in 0 ..< n:
+    result.add(readPerson(ctx, rawIndex(ctx, v, idx,
+      "\"" & key & "\" entries must be {uri, ...}"), key))
 
-proc fieldDts(o: JsonNode; key: string): seq[IcalDt] =
-  if not o.hasKey(key):
+proc readDts(ctx: JSContextRef; obj: JSValueRef;
+    key: string): seq[IcalDt] =
+  if not rawHas(ctx, obj, key):
     return @[]
-  let v = o[key]
-  if v.kind != JArray:
-    raise icalErr("\"" & key & "\" must be an array")
-  for item in v:
-    var wrap = newJObject()
-    wrap["d"] = item
-    let got = fieldDt(wrap, "d")
-    if got.isSome:
-      result.add(got.get())
+  let v = requireArr(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be an array")
+  let n = rawLen(ctx, v, "\"" & key & "\" must be an array")
+  for idx in 0 ..< n:
+    result.add(readDt(ctx, rawIndex(ctx, v, idx,
+      "\"" & key & "\" must be {value, tzid?}"), key))
 
-proc fieldDur(o: JsonNode; key: string): Option[IcalDuration] =
-  let s = fieldStr(o, key)
+proc readDur(ctx: JSContextRef; obj: JSValueRef;
+    key: string): Option[IcalDuration] =
+  let s = readOptStr(ctx, obj, key)
   if s.isNone:
     return none(IcalDuration)
   try:
@@ -372,212 +738,274 @@ proc fieldDur(o: JsonNode; key: string): Option[IcalDuration] =
   except CatchableError as e:
     raise icalErr("\"" & key & "\": " & e.msg)
 
-proc fieldTrigger(o: JsonNode; key: string): Option[IcalTrigger] =
-  if not o.hasKey(key):
+proc readOptTrigger(ctx: JSContextRef; obj: JSValueRef;
+    key: string): Option[IcalTrigger] =
+  if not rawHas(ctx, obj, key):
     return none(IcalTrigger)
-  let v = o[key]
-  if v.kind != JObject or not v.hasKey("kind"):
+  let v = requireObj(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be {kind, ...}")
+  if not rawHas(ctx, v, "kind"):
     raise icalErr("\"" & key & "\" must be {kind, ...}")
-  let kind = v["kind"].getStr()
+  let kind = readStr(ctx, rawGet(ctx, v, "kind"),
+    "\"" & key & "\" must be {kind, ...}")
   if kind == "relative":
-    if not v.hasKey("duration"):
+    if not rawHas(ctx, v, "duration"):
       raise icalErr("relative trigger needs \"duration\"")
     try:
-      some(IcalTrigger(kind: trkRelative,
-        dur: parseIcalDuration(v["duration"].getStr())))
+      some(IcalTrigger(kind: trkRelative, dur: parseIcalDuration(
+        readStr(ctx, rawGet(ctx, v, "duration"),
+          "relative trigger needs \"duration\""))))
     except CatchableError as e:
       raise icalErr("\"" & key & "\": " & e.msg)
   elif kind == "absolute":
-    if not v.hasKey("dateTime"):
+    if not rawHas(ctx, v, "dateTime"):
       raise icalErr("absolute trigger needs \"dateTime\"")
     try:
-      some(IcalTrigger(kind: trkAbsolute,
-        dt: parseIcalDateTime(v["dateTime"].getStr())))
+      some(IcalTrigger(kind: trkAbsolute, dt: parseIcalDateTime(
+        readStr(ctx, rawGet(ctx, v, "dateTime"),
+          "absolute trigger needs \"dateTime\""))))
     except CatchableError as e:
       raise icalErr("\"" & key & "\": " & e.msg)
   else:
     raise icalErr("\"" & key & "\": unknown trigger kind \"" & kind & "\"")
 
-proc fieldProp(v: JsonNode): IcalProp =
-  if v.kind != JObject or not v.hasKey("name") or not v.hasKey("value"):
+proc readProp(ctx: JSContextRef; v: JSValueRef): IcalProp =
+  let o = requireObj(ctx, v, "props entries need {name, params?, value}")
+  if not rawHas(ctx, o, "name") or not rawHas(ctx, o, "value"):
     raise icalErr("props entries need {name, params?, value}")
   var params: seq[IcalParam] = @[]
-  if v.hasKey("params"):
-    params = fieldParams(v["params"])
-  IcalProp(name: v["name"].getStr(), params: params,
-    value: v["value"].getStr())
+  if rawHas(ctx, o, "params"):
+    params = readParams(ctx, rawGet(ctx, o, "params"))
+  IcalProp(name: readStr(ctx, rawGet(ctx, o, "name"),
+    "props entries need {name, params?, value}"), params: params,
+    value: readStr(ctx, rawGet(ctx, o, "value"),
+      "props entries need {name, params?, value}"))
 
-proc fieldProps(o: JsonNode; key: string): seq[IcalProp] =
-  if not o.hasKey(key):
+proc readProps(ctx: JSContextRef; obj: JSValueRef;
+    key: string): seq[IcalProp] =
+  if not rawHas(ctx, obj, key):
     return @[]
-  let v = o[key]
-  if v.kind != JArray:
-    raise icalErr("\"" & key & "\" must be an array")
-  for item in v:
-    result.add(fieldProp(item))
+  let v = requireArr(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be an array")
+  let n = rawLen(ctx, v, "\"" & key & "\" must be an array")
+  for idx in 0 ..< n:
+    result.add(readProp(ctx, rawIndex(ctx, v, idx,
+      "props entries need {name, params?, value}")))
 
-proc fieldAlarms(o: JsonNode; key: string): seq[IcalAlarm] =
-  if not o.hasKey(key):
+proc readAlarms(ctx: JSContextRef; obj: JSValueRef;
+    key: string): seq[IcalAlarm] =
+  if not rawHas(ctx, obj, key):
     return @[]
-  let v = o[key]
-  if v.kind != JArray:
-    raise icalErr("\"" & key & "\" must be an array")
-  for item in v:
-    if item.kind != JObject or not item.hasKey("action"):
+  let v = requireArr(ctx, rawGet(ctx, obj, key),
+    "\"" & key & "\" must be an array")
+  let n = rawLen(ctx, v, "\"" & key & "\" must be an array")
+  for idx in 0 ..< n:
+    let item = requireObj(ctx, rawIndex(ctx, v, idx,
+      "alarms entries need {action, ...}"),
+      "alarms entries need {action, ...}")
+    if not rawHas(ctx, item, "action"):
       raise icalErr("alarms entries need {action, ...}")
-    var a = IcalAlarm(action: item["action"].getStr())
-    a.trigger = fieldTrigger(item, "trigger")
-    a.description = fieldStr(item, "description")
-    a.summary = fieldStr(item, "summary")
-    a.repeatCount = fieldInt(item, "repeat")
-    a.duration = fieldDur(item, "duration")
-    a.attendees = fieldPersons(item, "attendees")
+    var a = IcalAlarm(action: readStr(ctx, rawGet(ctx, item, "action"),
+      "alarms entries need {action, ...}"))
+    a.trigger = readOptTrigger(ctx, item, "trigger")
+    a.description = readOptStr(ctx, item, "description")
+    a.summary = readOptStr(ctx, item, "summary")
+    a.repeatCount = readOptInt(ctx, item, "repeat")
+    a.duration = readDur(ctx, item, "duration")
+    a.attendees = readPersons(ctx, item, "attendees")
     result.add(a)
 
-proc jsonToEvent(v: JsonNode): IcalEvent =
-  if v.kind != JObject:
-    raise icalErr("events entries must be objects")
-  result = IcalEvent(uid: fieldStr(v, "uid").get(""))
-  result.dtstamp = fieldDt(v, "dtstamp")
-  result.dtStart = fieldDt(v, "dtstart")
-  result.dtEnd = fieldDt(v, "dtend")
-  result.duration = fieldDur(v, "duration")
-  result.summary = fieldStr(v, "summary")
-  result.description = fieldStr(v, "description")
-  result.location = fieldStr(v, "location")
-  result.status = fieldStr(v, "status")
-  result.transparency = fieldStr(v, "transparency")
-  result.classification = fieldStr(v, "classification")
-  result.priority = fieldInt(v, "priority")
-  result.sequenceNum = fieldInt(v, "sequence")
-  result.created = fieldDt(v, "created")
-  result.lastModified = fieldDt(v, "lastModified")
-  result.url = fieldStr(v, "url")
-  result.organizer = fieldPerson(v, "organizer")
-  result.attendees = fieldPersons(v, "attendees")
-  result.categories = fieldStrs(v, "categories")
-  result.rrule = fieldStr(v, "rrule")
-  result.exdates = fieldDts(v, "exdates")
-  result.attachments = fieldStrs(v, "attachments")
-  result.recurrenceId = fieldDt(v, "recurrenceId")
-  result.alarms = fieldAlarms(v, "alarms")
-  result.extraProps = fieldProps(v, "extraProps")
+proc jsToEvent(ctx: JSContextRef; v: JSValueRef; depth: int): IcalEvent =
+  if depth > maxDumpDepth:
+    raise icalErr("event is too deeply nested or circular")
+  let o = requireObj(ctx, v, "events entries must be objects")
+  result = IcalEvent(uid: readOptStr(ctx, o, "uid").get(""))
+  result.dtstamp = readOptDt(ctx, o, "dtstamp")
+  result.dtStart = readOptDt(ctx, o, "dtstart")
+  result.dtEnd = readOptDt(ctx, o, "dtend")
+  result.duration = readDur(ctx, o, "duration")
+  result.summary = readOptStr(ctx, o, "summary")
+  result.description = readOptStr(ctx, o, "description")
+  result.location = readOptStr(ctx, o, "location")
+  result.status = readOptStr(ctx, o, "status")
+  result.transparency = readOptStr(ctx, o, "transparency")
+  result.classification = readOptStr(ctx, o, "classification")
+  result.priority = readOptInt(ctx, o, "priority")
+  result.sequenceNum = readOptInt(ctx, o, "sequence")
+  result.created = readOptDt(ctx, o, "created")
+  result.lastModified = readOptDt(ctx, o, "lastModified")
+  result.url = readOptStr(ctx, o, "url")
+  result.organizer = readOptPerson(ctx, o, "organizer")
+  result.attendees = readPersons(ctx, o, "attendees")
+  result.categories = readStrs(ctx, o, "categories")
+  result.rrule = readOptStr(ctx, o, "rrule")
+  result.exdates = readDts(ctx, o, "exdates")
+  result.attachments = readStrs(ctx, o, "attachments")
+  result.recurrenceId = readOptDt(ctx, o, "recurrenceId")
+  result.alarms = readAlarms(ctx, o, "alarms")
+  result.extraProps = readProps(ctx, o, "extraProps")
 
-proc jsonToTodo(v: JsonNode): IcalTodo =
-  if v.kind != JObject:
-    raise icalErr("todos entries must be objects")
-  result = IcalTodo(uid: fieldStr(v, "uid").get(""))
-  result.dtstamp = fieldDt(v, "dtstamp")
-  result.dtStart = fieldDt(v, "dtstart")
-  result.due = fieldDt(v, "due")
-  result.completed = fieldDt(v, "completed")
-  result.summary = fieldStr(v, "summary")
-  result.description = fieldStr(v, "description")
-  result.location = fieldStr(v, "location")
-  result.status = fieldStr(v, "status")
-  result.classification = fieldStr(v, "classification")
-  result.priority = fieldInt(v, "priority")
-  result.sequenceNum = fieldInt(v, "sequence")
-  result.created = fieldDt(v, "created")
-  result.lastModified = fieldDt(v, "lastModified")
-  result.url = fieldStr(v, "url")
-  result.organizer = fieldPerson(v, "organizer")
-  result.attendees = fieldPersons(v, "attendees")
-  result.categories = fieldStrs(v, "categories")
-  result.rrule = fieldStr(v, "rrule")
-  result.percentComplete = fieldInt(v, "percentComplete")
-  result.alarms = fieldAlarms(v, "alarms")
-  result.extraProps = fieldProps(v, "extraProps")
+proc jsToTodo(ctx: JSContextRef; v: JSValueRef; depth: int): IcalTodo =
+  if depth > maxDumpDepth:
+    raise icalErr("todo is too deeply nested or circular")
+  let o = requireObj(ctx, v, "todos entries must be objects")
+  result = IcalTodo(uid: readOptStr(ctx, o, "uid").get(""))
+  result.dtstamp = readOptDt(ctx, o, "dtstamp")
+  result.dtStart = readOptDt(ctx, o, "dtstart")
+  result.due = readOptDt(ctx, o, "due")
+  result.completed = readOptDt(ctx, o, "completed")
+  result.summary = readOptStr(ctx, o, "summary")
+  result.description = readOptStr(ctx, o, "description")
+  result.location = readOptStr(ctx, o, "location")
+  result.status = readOptStr(ctx, o, "status")
+  result.classification = readOptStr(ctx, o, "classification")
+  result.priority = readOptInt(ctx, o, "priority")
+  result.sequenceNum = readOptInt(ctx, o, "sequence")
+  result.created = readOptDt(ctx, o, "created")
+  result.lastModified = readOptDt(ctx, o, "lastModified")
+  result.url = readOptStr(ctx, o, "url")
+  result.organizer = readOptPerson(ctx, o, "organizer")
+  result.attendees = readPersons(ctx, o, "attendees")
+  result.categories = readStrs(ctx, o, "categories")
+  result.rrule = readOptStr(ctx, o, "rrule")
+  result.percentComplete = readOptInt(ctx, o, "percentComplete")
+  result.alarms = readAlarms(ctx, o, "alarms")
+  result.extraProps = readProps(ctx, o, "extraProps")
 
-proc jsonToJournal(v: JsonNode): IcalJournal =
-  if v.kind != JObject:
-    raise icalErr("journals entries must be objects")
-  result = IcalJournal(uid: fieldStr(v, "uid").get(""))
-  result.dtstamp = fieldDt(v, "dtstamp")
-  result.summary = fieldStr(v, "summary")
-  result.description = fieldStr(v, "description")
-  result.status = fieldStr(v, "status")
-  result.classification = fieldStr(v, "classification")
-  result.organizer = fieldPerson(v, "organizer")
-  result.categories = fieldStrs(v, "categories")
-  result.attendees = fieldPersons(v, "attendees")
-  result.extraProps = fieldProps(v, "extraProps")
+proc jsToJournal(ctx: JSContextRef; v: JSValueRef; depth: int): IcalJournal =
+  if depth > maxDumpDepth:
+    raise icalErr("journal is too deeply nested or circular")
+  let o = requireObj(ctx, v, "journals entries must be objects")
+  result = IcalJournal(uid: readOptStr(ctx, o, "uid").get(""))
+  result.dtstamp = readOptDt(ctx, o, "dtstamp")
+  result.summary = readOptStr(ctx, o, "summary")
+  result.description = readOptStr(ctx, o, "description")
+  result.status = readOptStr(ctx, o, "status")
+  result.classification = readOptStr(ctx, o, "classification")
+  result.organizer = readOptPerson(ctx, o, "organizer")
+  result.categories = readStrs(ctx, o, "categories")
+  result.attendees = readPersons(ctx, o, "attendees")
+  result.extraProps = readProps(ctx, o, "extraProps")
 
-proc jsonToTzObs(v: JsonNode): IcalTzObservance =
-  if v.kind != JObject:
-    raise icalErr("timezone observances must be objects")
+proc jsToTzObs(ctx: JSContextRef; v: JSValueRef): IcalTzObservance =
+  let o = requireObj(ctx, v, "timezone observances must be objects")
   result = IcalTzObservance()
-  let ds = fieldStr(v, "dtstart")
+  let ds = readOptStr(ctx, o, "dtstart")
   if ds.isSome:
     try:
       result.dtstart = some(parseIcalDateTime(ds.get()))
     except CatchableError as e:
       raise icalErr("\"dtstart\": " & e.msg)
-  result.offsetFrom = fieldStr(v, "offsetFrom")
-  result.offsetTo = fieldStr(v, "offsetTo")
-  result.names = fieldStrs(v, "names")
-  result.rrule = fieldStr(v, "rrule")
-  result.extraProps = fieldProps(v, "extraProps")
+  result.offsetFrom = readOptStr(ctx, o, "offsetFrom")
+  result.offsetTo = readOptStr(ctx, o, "offsetTo")
+  result.names = readStrs(ctx, o, "names")
+  result.rrule = readOptStr(ctx, o, "rrule")
+  result.extraProps = readProps(ctx, o, "extraProps")
 
-proc jsonToTz(v: JsonNode): IcalTimezone =
-  if v.kind != JObject or not v.hasKey("tzid"):
+proc jsToTz(ctx: JSContextRef; v: JSValueRef): IcalTimezone =
+  let o = requireObj(ctx, v, "timezones entries need {tzid, ...}")
+  if not rawHas(ctx, o, "tzid"):
     raise icalErr("timezones entries need {tzid, ...}")
-  result = IcalTimezone(tzid: v["tzid"].getStr())
-  if v.hasKey("standard"):
-    for item in v["standard"]:
-      result.standard.add(jsonToTzObs(item))
-  if v.hasKey("daylight"):
-    for item in v["daylight"]:
-      result.daylight.add(jsonToTzObs(item))
-  result.extraProps = fieldProps(v, "extraProps")
+  result = IcalTimezone(tzid: readStr(ctx, rawGet(ctx, o, "tzid"),
+    "timezones entries need {tzid, ...}"))
+  if rawHas(ctx, o, "standard"):
+    let s = requireArr(ctx, rawGet(ctx, o, "standard"),
+      "timezones entries need {tzid, ...}")
+    let n = rawLen(ctx, s, "timezones entries need {tzid, ...}")
+    for idx in 0 ..< n:
+      result.standard.add(jsToTzObs(ctx, rawIndex(ctx, s, idx,
+        "timezone observances must be objects")))
+  if rawHas(ctx, o, "daylight"):
+    let s = requireArr(ctx, rawGet(ctx, o, "daylight"),
+      "timezones entries need {tzid, ...}")
+    let n = rawLen(ctx, s, "timezones entries need {tzid, ...}")
+    for idx in 0 ..< n:
+      result.daylight.add(jsToTzObs(ctx, rawIndex(ctx, s, idx,
+        "timezone observances must be objects")))
+  result.extraProps = readProps(ctx, o, "extraProps")
 
-proc jsonToGeneric(v: JsonNode): IcalGenericSub =
-  if v.kind != JObject or not v.hasKey("name"):
+proc jsToGeneric(ctx: JSContextRef; v: JSValueRef; depth: int): IcalGenericSub =
+  if depth > maxDumpDepth:
+    raise icalErr("component is too deeply nested or circular")
+  let o = requireObj(ctx, v, "generic components need {name, ...}")
+  if not rawHas(ctx, o, "name"):
     raise icalErr("generic components need {name, ...}")
-  result = IcalGenericSub(name: v["name"].getStr())
-  result.props = fieldProps(v, "props")
-  if v.hasKey("children"):
-    for item in v["children"]:
-      result.children.add(jsonToGeneric(item))
+  result = IcalGenericSub(name: readStr(ctx, rawGet(ctx, o, "name"),
+    "generic components need {name, ...}"))
+  result.props = readProps(ctx, o, "props")
+  if rawHas(ctx, o, "children"):
+    let c = requireArr(ctx, rawGet(ctx, o, "children"),
+      "generic components need {name, ...}")
+    let n = rawLen(ctx, c, "generic components need {name, ...}")
+    for idx in 0 ..< n:
+      result.children.add(jsToGeneric(ctx, rawIndex(ctx, c, idx,
+        "generic components need {name, ...}"), depth + 1))
 
-proc jsonToOther(v: JsonNode): IcalOther =
-  if v.kind != JObject or not v.hasKey("name"):
+proc jsToOther(ctx: JSContextRef; v: JSValueRef; depth: int): IcalOther =
+  if depth > maxDumpDepth:
+    raise icalErr("component is too deeply nested or circular")
+  let o = requireObj(ctx, v, "other components need {name, ...}")
+  if not rawHas(ctx, o, "name"):
     raise icalErr("other components need {name, ...}")
-  result = IcalOther(name: v["name"].getStr())
-  result.props = fieldProps(v, "props")
-  if v.hasKey("children"):
-    for item in v["children"]:
-      result.children.add(jsonToGeneric(item))
+  result = IcalOther(name: readStr(ctx, rawGet(ctx, o, "name"),
+    "other components need {name, ...}"))
+  result.props = readProps(ctx, o, "props")
+  if rawHas(ctx, o, "children"):
+    let c = requireArr(ctx, rawGet(ctx, o, "children"),
+      "other components need {name, ...}")
+    let n = rawLen(ctx, c, "other components need {name, ...}")
+    for idx in 0 ..< n:
+      result.children.add(jsToGeneric(ctx, rawIndex(ctx, c, idx,
+        "other components need {name, ...}"), depth + 1))
 
-proc jsonToCal(node: JsonNode): IcalCalendar =
-  if node.kind != JObject:
-    raise icalErr("calendar must be an object")
+proc jsToCal(ctx: JSContextRef; v: JSValueRef): IcalCalendar =
+  let node = requireObj(ctx, v, "calendar must be an object")
   result = IcalCalendar()
-  result.prodId = fieldStr(node, "prodid")
-  result.version = fieldStr(node, "version")
-  result.calscale = fieldStr(node, "calscale")
-  result.`method` = fieldStr(node, "method")
-  result.extraProps = fieldProps(node, "extraProps")
-  if node.hasKey("events"):
-    for item in node["events"]:
+  result.prodId = readOptStr(ctx, node, "prodid")
+  result.version = readOptStr(ctx, node, "version")
+  result.calscale = readOptStr(ctx, node, "calscale")
+  result.`method` = readOptStr(ctx, node, "method")
+  result.extraProps = readProps(ctx, node, "extraProps")
+  if rawHas(ctx, node, "events"):
+    let e = requireArr(ctx, rawGet(ctx, node, "events"),
+      "calendar must be an object")
+    let n = rawLen(ctx, e, "calendar must be an object")
+    for idx in 0 ..< n:
       result.components.add(IcalComponent(kind: cckEvent,
-        event: jsonToEvent(item)))
-  if node.hasKey("todos"):
-    for item in node["todos"]:
+        event: jsToEvent(ctx, rawIndex(ctx, e, idx,
+          "events entries must be objects"), 0)))
+  if rawHas(ctx, node, "todos"):
+    let e = requireArr(ctx, rawGet(ctx, node, "todos"),
+      "calendar must be an object")
+    let n = rawLen(ctx, e, "calendar must be an object")
+    for idx in 0 ..< n:
       result.components.add(IcalComponent(kind: cckTodo,
-        todo: jsonToTodo(item)))
-  if node.hasKey("journals"):
-    for item in node["journals"]:
+        todo: jsToTodo(ctx, rawIndex(ctx, e, idx,
+          "todos entries must be objects"), 0)))
+  if rawHas(ctx, node, "journals"):
+    let e = requireArr(ctx, rawGet(ctx, node, "journals"),
+      "calendar must be an object")
+    let n = rawLen(ctx, e, "calendar must be an object")
+    for idx in 0 ..< n:
       result.components.add(IcalComponent(kind: cckJournal,
-        journal: jsonToJournal(item)))
-  if node.hasKey("timezones"):
-    for item in node["timezones"]:
+        journal: jsToJournal(ctx, rawIndex(ctx, e, idx,
+          "journals entries must be objects"), 0)))
+  if rawHas(ctx, node, "timezones"):
+    let e = requireArr(ctx, rawGet(ctx, node, "timezones"),
+      "calendar must be an object")
+    let n = rawLen(ctx, e, "calendar must be an object")
+    for idx in 0 ..< n:
       result.components.add(IcalComponent(kind: cckTimezone,
-        timezone: jsonToTz(item)))
-  if node.hasKey("others"):
-    for item in node["others"]:
+        timezone: jsToTz(ctx, rawIndex(ctx, e, idx,
+          "timezones entries need {tzid, ...}"))))
+  if rawHas(ctx, node, "others"):
+    let e = requireArr(ctx, rawGet(ctx, node, "others"),
+      "calendar must be an object")
+    let n = rawLen(ctx, e, "calendar must be an object")
+    for idx in 0 ..< n:
       result.components.add(IcalComponent(kind: cckOther,
-        other: jsonToOther(item)))
+        other: jsToOther(ctx, rawIndex(ctx, e, idx,
+          "other components need {name, ...}"), 0)))
 
 # -- JS entry points ---------------------------------------------------
 
@@ -588,20 +1016,20 @@ init proc(module: Module) =
     module.registerFn parse(text: string):
       ## ical.parse(text) -> {events, todos, journals, timezones, others}
       try:
-        returnJson(ctx, calToJson(parseIcal(text)), "parse", exception)
+        let j = calToJS(ctx, parseIcal(text), "parse", exception)
+        if j == nil:
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
 
     module.registerFn stringify(value: JSValueRef):
       ## ical.stringify(cal) -> string (a VCALENDAR document)
-      var err = ""
-      let node = jsToJson(ctx, value, err)
-      if node == nil:
-        throwError(ctx, "stringify: " & err, exception)
-        return nil
       try:
-        toJS(ctx, toIcal(jsonToCal(node)))
+        toJS(ctx, toIcal(jsToCal(ctx, value)))
       except CatchableError as e:
         throwError(ctx, "stringify: " & e.msg, exception)
         nil

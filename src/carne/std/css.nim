@@ -9,7 +9,7 @@
 # Declaration nodes carry the raw value text plus the important flag;
 # selector/value detail is preserved in parts/components.
 
-import std/[json, strutils]
+import std/strutils
 
 import javascriptcore
 
@@ -17,90 +17,219 @@ import pkg/openparser/css
 
 import ../bridge
 
-proc cssValueToJson(v: CssValue): JsonNode =
-  result = newJObject()
-  result["kind"] = %($v.kind)[3 .. ^1]
+proc cssValueToJS(ctx: JSContextRef; v: CssValue; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  ## CssValue -> live JS value, no JsonNode middle layer.
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "kind", toJS(ctx, ($v.kind)[3 .. ^1]),
+      fname, exception):
+    return nil
   case v.kind
   of cvkFunction:
-    result["name"] = %v.funcName
-    var args = newJArray()
+    if not setPropChecked(ctx, obj, "name", toJS(ctx, v.funcName),
+        fname, exception):
+      return nil
+    var vals: seq[JSValueRef] = @[]
     for a in v.args:
-      args.add(cssValueToJson(a))
-    result["args"] = args
+      let j = cssValueToJS(ctx, a, fname, exception)
+      if j == nil:
+        return nil
+      vals.add(j)
+    let args = makeJSArray(ctx, vals)
+    if args == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "args", args, fname, exception):
+      return nil
   of cvkNumber:
-    result["value"] = %v.numValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.numValue),
+        fname, exception):
+      return nil
   of cvkDimension:
-    result["value"] = %v.dimValue
-    result["unit"] = %v.dimUnit
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.dimValue),
+        fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "unit", toJS(ctx, v.dimUnit),
+        fname, exception):
+      return nil
   of cvkPercentage:
-    result["value"] = %v.pctValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.pctValue),
+        fname, exception):
+      return nil
   of cvkString:
-    result["value"] = %v.strValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.strValue),
+        fname, exception):
+      return nil
   of cvkUrl:
-    result["value"] = %v.urlValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.urlValue),
+        fname, exception):
+      return nil
   of cvkIdent:
-    result["value"] = %v.identValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.identValue),
+        fname, exception):
+      return nil
   of cvkHash:
-    result["value"] = %v.hashValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.hashValue),
+        fname, exception):
+      return nil
   of cvkImportant:
-    result["important"] = %true
+    if not setPropChecked(ctx, obj, "important", toJS(ctx, true),
+        fname, exception):
+      return nil
   of cvkBlock:
-    var vals = newJArray()
+    var vals: seq[JSValueRef] = @[]
     for b in v.blockValues:
-      vals.add(cssValueToJson(b))
-    result["values"] = vals
+      let j = cssValueToJS(ctx, b, fname, exception)
+      if j == nil:
+        return nil
+      vals.add(j)
+    let arr = makeJSArray(ctx, vals)
+    if arr == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "values", arr, fname, exception):
+      return nil
   of cvkPreserved:
-    result["value"] = %v.preservedValue
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, v.preservedValue),
+        fname, exception):
+      return nil
   of cvkComment:
-    result["text"] = %v.commentText
+    if not setPropChecked(ctx, obj, "text", toJS(ctx, v.commentText),
+        fname, exception):
+      return nil
+  result = obj
 
-proc cssNodeToJson(n: CssNode): JsonNode =
-  result = newJObject()
-  result["kind"] = %($n.kind)[3 .. ^1]
+proc cssValsToJS(ctx: JSContextRef; vals: seq[CssValue]; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  var outs: seq[JSValueRef] = @[]
+  for v in vals:
+    let j = cssValueToJS(ctx, v, fname, exception)
+    if j == nil:
+      return nil
+    outs.add(j)
+  let arr = makeJSArray(ctx, outs)
+  if arr == nil:
+    throwError(ctx, fname & ": could not convert result to JS",
+      exception)
+    return nil
+  arr
+
+proc cssNodeToJS(ctx: JSContextRef; n: CssNode; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  ## CssNode -> live JS value, no JsonNode middle layer.
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "kind", toJS(ctx, ($n.kind)[3 .. ^1]),
+      fname, exception):
+    return nil
   case n.kind
   of cssStyleSheet:
-    var rules = newJArray()
+    var vals: seq[JSValueRef] = @[]
     for r in n.rules:
-      rules.add(cssNodeToJson(r))
-    result["rules"] = rules
+      let j = cssNodeToJS(ctx, r, fname, exception)
+      if j == nil:
+        return nil
+      vals.add(j)
+    let rules = makeJSArray(ctx, vals)
+    if rules == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "rules", rules, fname, exception):
+      return nil
   of cssRuleSet:
-    var sels = newJArray()
+    var sels: seq[JSValueRef] = @[]
     for s in n.selectors:
-      sels.add(cssNodeToJson(s))
-    result["selectors"] = sels
-    var decls = newJArray()
+      let j = cssNodeToJS(ctx, s, fname, exception)
+      if j == nil:
+        return nil
+      sels.add(j)
+    let selArr = makeJSArray(ctx, sels)
+    if selArr == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "selectors", selArr, fname,
+        exception):
+      return nil
+    var decls: seq[JSValueRef] = @[]
     for d in n.declarations:
-      decls.add(cssNodeToJson(d))
-    result["declarations"] = decls
+      let j = cssNodeToJS(ctx, d, fname, exception)
+      if j == nil:
+        return nil
+      decls.add(j)
+    let declArr = makeJSArray(ctx, decls)
+    if declArr == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "declarations", declArr, fname,
+        exception):
+      return nil
   of cssSelector:
-    result["selectorKind"] = %($n.selectorKind)[8 .. ^1]
-    var parts = newJArray()
+    if not setPropChecked(ctx, obj, "selectorKind",
+        toJS(ctx, ($n.selectorKind)[8 .. ^1]), fname, exception):
+      return nil
+    var parts: seq[JSValueRef] = @[]
     for p in n.parts:
-      parts.add(%p)
-    result["parts"] = parts
+      parts.add(toJS(ctx, p))
+    let partArr = makeJSArray(ctx, parts)
+    if partArr == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "parts", partArr, fname, exception):
+      return nil
   of cssDeclaration:
-    result["property"] = %n.property
-    result["value"] = %n.rawValue
-    result["important"] = %n.important
+    if not setPropChecked(ctx, obj, "property", toJS(ctx, n.property),
+        fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, n.rawValue),
+        fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "important", toJS(ctx, n.important),
+        fname, exception):
+      return nil
   of cssComment:
-    result["text"] = %n.text
+    if not setPropChecked(ctx, obj, "text", toJS(ctx, n.text), fname,
+        exception):
+      return nil
   of cssAtRule:
-    result["name"] = %n.atName
-    result["prelude"] = %n.prelude
-    var rules = newJArray()
+    if not setPropChecked(ctx, obj, "name", toJS(ctx, n.atName), fname,
+        exception):
+      return nil
+    if not setPropChecked(ctx, obj, "prelude", toJS(ctx, n.prelude),
+        fname, exception):
+      return nil
+    var rvals: seq[JSValueRef] = @[]
     for r in n.atRules:
-      rules.add(cssNodeToJson(r))
-    result["rules"] = rules
-    var vals = newJArray()
-    for v in n.blockValues:
-      vals.add(cssValueToJson(v))
-    result["values"] = vals
+      let j = cssNodeToJS(ctx, r, fname, exception)
+      if j == nil:
+        return nil
+      rvals.add(j)
+    let rules = makeJSArray(ctx, rvals)
+    if rules == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "rules", rules, fname, exception):
+      return nil
+    let bvals = cssValsToJS(ctx, n.blockValues, fname, exception)
+    if bvals == nil:
+      return nil
+    if not setPropChecked(ctx, obj, "values", bvals, fname, exception):
+      return nil
   of cssValue:
-    result["raw"] = %n.raw
-    var comps = newJArray()
-    for c in n.components:
-      comps.add(cssValueToJson(c))
-    result["values"] = comps
+    if not setPropChecked(ctx, obj, "raw", toJS(ctx, n.raw), fname,
+        exception):
+      return nil
+    let comps = cssValsToJS(ctx, n.components, fname, exception)
+    if comps == nil:
+      return nil
+    if not setPropChecked(ctx, obj, "values", comps, fname, exception):
+      return nil
+  result = obj
 
 const VendorPrefixes = ["-webkit-", "-moz-", "-ms-", "-o-"]
 
@@ -117,41 +246,97 @@ proc knownProperty(data: CssData; prop: string): bool =
       return true
   false
 
-proc checkDecl(data: CssData; decl: CssNode; arr: var JsonNode) =
+proc checkDecl(ctx: JSContextRef; data: CssData; decl: CssNode;
+    fname: string; exception: ptr JSValueRef;
+    arr: var seq[JSValueRef]): bool =
+  ## False + JS throw when a problem object fails to build.
   if decl.kind != cssDeclaration:
-    return
+    return true
   if not knownProperty(data, decl.property):
-    arr.add(%*{"property": decl.property, "value": decl.rawValue,
-      "valid": false,
-      "errors": [{"message": "Unknown property",
-        "property": decl.property, "value": decl.rawValue}]})
-    return
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "property", toJS(ctx, decl.property),
+        fname, exception):
+      return false
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, decl.rawValue),
+        fname, exception):
+      return false
+    if not setPropChecked(ctx, obj, "valid", toJS(ctx, false), fname,
+        exception):
+      return false
+    let errObj = newObject(ctx)
+    if not setPropChecked(ctx, errObj, "message",
+        toJS(ctx, "Unknown property"), fname, exception):
+      return false
+    if not setPropChecked(ctx, errObj, "property",
+        toJS(ctx, decl.property), fname, exception):
+      return false
+    if not setPropChecked(ctx, errObj, "value", toJS(ctx, decl.rawValue),
+        fname, exception):
+      return false
+    let errs = makeJSArray(ctx, [errObj])
+    if errs == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return false
+    if not setPropChecked(ctx, obj, "errors", errs, fname, exception):
+      return false
+    arr.add(obj)
+    return true
   let res = validateDeclaration(data, decl)
   if not res.valid:
-    var obj = newJObject()
-    obj["property"] = %decl.property
-    obj["value"] = %decl.rawValue
-    obj["valid"] = %false
-    var errs = newJArray()
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "property", toJS(ctx, decl.property),
+        fname, exception):
+      return false
+    if not setPropChecked(ctx, obj, "value", toJS(ctx, decl.rawValue),
+        fname, exception):
+      return false
+    if not setPropChecked(ctx, obj, "valid", toJS(ctx, false), fname,
+        exception):
+      return false
+    var evals: seq[JSValueRef] = @[]
     for e in res.errors:
-      errs.add(%*{"message": e.message, "property": e.property,
-        "value": e.value})
-    obj["errors"] = errs
+      let errObj = newObject(ctx)
+      if not setPropChecked(ctx, errObj, "message", toJS(ctx, e.message),
+          fname, exception):
+        return false
+      if not setPropChecked(ctx, errObj, "property", toJS(ctx, e.property),
+          fname, exception):
+        return false
+      if not setPropChecked(ctx, errObj, "value", toJS(ctx, e.value),
+          fname, exception):
+        return false
+      evals.add(errObj)
+    let errs = makeJSArray(ctx, evals)
+    if errs == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return false
+    if not setPropChecked(ctx, obj, "errors", errs, fname, exception):
+      return false
     arr.add(obj)
+  true
 
-proc checkNode(data: CssData; node: CssNode; arr: var JsonNode) =
+proc checkNode(ctx: JSContextRef; data: CssData; node: CssNode;
+    fname: string; exception: ptr JSValueRef;
+    arr: var seq[JSValueRef]): bool =
   case node.kind
   of cssRuleSet:
     for decl in node.declarations:
-      checkDecl(data, decl, arr)
+      if not checkDecl(ctx, data, decl, fname, exception, arr):
+        return false
+    true
   of cssAtRule:
     for child in node.atRules:
       if child.kind == cssDeclaration:
-        checkDecl(data, child, arr)
+        if not checkDecl(ctx, data, child, fname, exception, arr):
+          return false
       else:
-        checkNode(data, child, arr)
+        if not checkNode(ctx, data, child, fname, exception, arr):
+          return false
+    true
   else:
-    discard
+    true
 
 var cssDataReady = false
 var cssData: CssData
@@ -171,10 +356,22 @@ init proc(module: Module) =
       ## css.parse(text) -> {rules: [...]}
       try:
         let sheet = parseCss(text)
-        var rules = newJArray()
+        var vals: seq[JSValueRef] = @[]
         for r in sheet.nodes:
-          rules.add(cssNodeToJson(r))
-        returnJson(ctx, %*{"rules": rules}, "parse", exception)
+          let j = cssNodeToJS(ctx, r, "parse", exception)
+          if j == nil:
+            return nil
+          vals.add(j)
+        let rules = makeJSArray(ctx, vals)
+        if rules == nil:
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        let obj = newObject(ctx)
+        if not setPropChecked(ctx, obj, "rules", rules, "parse",
+            exception):
+          return nil
+        obj
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
@@ -183,10 +380,16 @@ init proc(module: Module) =
       ## css.validate(text) -> problems per declaration ([] when clean)
       try:
         let data = getCssData()
-        var arr = newJArray()
+        var vals: seq[JSValueRef] = @[]
         for node in parseCss(text).nodes:
-          checkNode(data, node, arr)
-        returnJson(ctx, arr, "validate", exception)
+          if not checkNode(ctx, data, node, "validate", exception, vals):
+            return nil
+        let arr = makeJSArray(ctx, vals)
+        if arr == nil:
+          throwError(ctx, "validate: could not convert result to JS",
+            exception)
+          return nil
+        arr
       except CatchableError as e:
         throwError(ctx, "validate: " & e.msg, exception)
         nil

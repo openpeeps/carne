@@ -20,7 +20,12 @@ init proc(module: Module) =
     module.registerFn parse(text: string):
       ## plist.parse(data) -> value (XML or binary plist)
       try:
-        returnJson(ctx, parsePlist(text), "parse", exception)
+        let j = jsonNodeToJS(ctx, parsePlist(text))
+        if j == nil:
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
@@ -28,7 +33,7 @@ init proc(module: Module) =
     module.registerFn stringify(value: JSValueRef):
       ## plist.stringify(value) -> string (XML plist)
       var err = ""
-      let node = jsToJson(ctx, value, err)
+      let node = jsToJsonNode(ctx, value, err)
       if node == nil:
         throwError(ctx, "stringify: " & err, exception)
         return nil

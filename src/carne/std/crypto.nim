@@ -20,7 +20,7 @@
 # Like std/sql, the four groups are built as setup with define-only
 # `ctx.registerFn` callbacks sharing one helper per operation.
 
-import std/[json, strutils]
+import std/strutils
 
 import javascriptcore
 
@@ -118,8 +118,23 @@ proc doSeal(ctx: JSContextRef; text, keyHex: string; docBlock: string;
   const name = "aead.seal"
   try:
     let msg = seal(text, parseKey32(keyHex))
-    returnJson(ctx, %*{"nonce": hexOut(msg.nonce), "mac": hexOut(msg.mac),
-      "cipher": hexOut(msg.cipherText)}, name, exception)
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "nonce", toJS(ctx, hexOut(msg.nonce)),
+        name, exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "mac", toJS(ctx, hexOut(msg.mac)),
+        name, exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "cipher",
+        toJS(ctx, hexOut(msg.cipherText)), name, exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    obj
   except CatchableError as e:
     cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
@@ -159,9 +174,20 @@ proc doKeypair(ctx: JSContextRef; docBlock: string;
   const name = "sign.keypair"
   try:
     let kp = generateSigningKeyPair()
-    returnJson(ctx, %*{"publicKey": publicKeyToHex(kp.publicKey).toLowerAscii(),
-      "secretKey": secretKeyToHex(kp.secretKey).toLowerAscii()}, name,
-      exception)
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "publicKey",
+        toJS(ctx, publicKeyToHex(kp.publicKey).toLowerAscii()), name,
+        exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "secretKey",
+        toJS(ctx, secretKeyToHex(kp.secretKey).toLowerAscii()), name,
+        exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    obj
   except CatchableError as e:
     cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil
@@ -173,9 +199,20 @@ proc doKeypairFromSeed(ctx: JSContextRef; seedHex: string;
     if seedHex.len != 64:
       raise newException(ValueError, "seed must be 64 hex chars (32 bytes)")
     let kp = generateSigningKeyPair(fromHex[32, uint8](seedHex))
-    returnJson(ctx, %*{"publicKey": publicKeyToHex(kp.publicKey).toLowerAscii(),
-      "secretKey": secretKeyToHex(kp.secretKey).toLowerAscii()}, name,
-      exception)
+    let obj = newObject(ctx)
+    if not setPropChecked(ctx, obj, "publicKey",
+        toJS(ctx, publicKeyToHex(kp.publicKey).toLowerAscii()), name,
+        exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "secretKey",
+        toJS(ctx, secretKeyToHex(kp.secretKey).toLowerAscii()), name,
+        exception):
+      cryptoErr(ctx, docBlock, name, "could not convert result to JS",
+        exception)
+      return nil
+    obj
   except CatchableError as e:
     cryptoErr(ctx, docBlock, name, e.msg, exception)
     nil

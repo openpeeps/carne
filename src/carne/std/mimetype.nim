@@ -15,25 +15,13 @@
 # MIME types match exactly (lowercase). `charset` is deferred until
 # mimedb exposes a getter for it.
 
-import std/[json, options]
+import std/options
 
 import javascriptcore
 
 import pkg/mimedb
 
 import ../bridge
-
-proc mimeInfoToJson(info: Mime): JsonNode =
-  let opt = some(info)
-  result = newJObject()
-  result["source"] = %($opt.getSource())
-  result["compressible"] = %opt.isCompressible()
-  var exts = newJArray()
-  let known = opt.getExtensions()
-  if known.isSome:
-    for e in known.get():
-      exts.add(%e)
-  result["extensions"] = exts
 
 ## Builds the std/mimetype namespace object.
 init proc(module: Module) =
@@ -45,15 +33,37 @@ init proc(module: Module) =
       if t.isSome:
         toJS(ctx, t.get())
       else:
-        returnJson(ctx, newJNull(), "lookup", exception)
+        JSValueMakeNull(ctx)
 
     module.registerFn info(mimeType: string):
       ## mimetype.info(type) -> {source, extensions, compressible} or null
       let i = getMimeInfo(mimeType)
       if i.isSome:
-        returnJson(ctx, mimeInfoToJson(i.get()), "info", exception)
+        let info = i.get()
+        let opt = some(info)
+        let obj = newObject(ctx)
+        if not setPropChecked(ctx, obj, "source",
+            toJS(ctx, $opt.getSource()), "info", exception):
+          return nil
+        if not setPropChecked(ctx, obj, "compressible",
+            toJS(ctx, opt.isCompressible()), "info", exception):
+          return nil
+        var vals: seq[JSValueRef] = @[]
+        let known = opt.getExtensions()
+        if known.isSome:
+          for e in known.get():
+            vals.add(toJS(ctx, e))
+        let exts = makeJSArray(ctx, vals)
+        if exts == nil:
+          throwError(ctx, "info: could not convert result to JS",
+            exception)
+          return nil
+        if not setPropChecked(ctx, obj, "extensions", exts, "info",
+            exception):
+          return nil
+        obj
       else:
-        returnJson(ctx, newJNull(), "info", exception)
+        JSValueMakeNull(ctx)
 
     module.registerFn isExtension(ext: string):
       ## mimetype.isExtension(ext) -> bool

@@ -7,7 +7,7 @@
 # row becomes keys and the result is an array of objects. openparser's CSV
 # reader is MemFile-based, so input goes through a temp file.
 
-import std/[json, os]
+import std/os
 
 import javascriptcore
 
@@ -69,21 +69,37 @@ init proc(module: Module) =
       try: removeFile(tmp)
       except OSError: discard
       try:
-        let arr = newJArray()
+        var vals: seq[JSValueRef] = @[]
         if headers and rows.len > 0:
           let heads = rows[0]
           for r in rows[1 .. ^1]:
-            let obj = newJObject()
+            let obj = newObject(ctx)
+            var ex: JSValueRef = nil
             for i, h in heads:
-              obj[h] = %(if i < r.len: r[i] else: "")
-            arr.add(obj)
+              setProp(ctx, obj, h, toJS(ctx, if i < r.len: r[i] else: ""),
+                addr ex)
+              if ex != nil:
+                throwError(ctx, "parse: could not convert result to JS",
+                  exception)
+                return nil
+            vals.add(obj)
         elif not headers:
           for r in rows:
-            let a = newJArray()
+            var fvals: seq[JSValueRef] = @[]
             for f in r:
-              a.add(%f)
-            arr.add(a)
-        returnJson(ctx, arr, "parse", exception)
+              fvals.add(toJS(ctx, f))
+            let a = makeJSArray(ctx, fvals)
+            if a == nil:
+              throwError(ctx, "parse: could not convert result to JS",
+                exception)
+              return nil
+            vals.add(a)
+        let arr = makeJSArray(ctx, vals)
+        if arr == nil:
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        arr
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil

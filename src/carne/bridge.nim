@@ -6,6 +6,7 @@
 
 import std/macros
 import std/math
+import std/options
 import std/strutils
 import std/tables
 
@@ -147,6 +148,52 @@ proc throwError*(ctx: JSContextRef; msg: string;
   if err != nil:
     exception[] = err
 
+proc setPropChecked*(ctx: JSContextRef; obj: JSObjectRef; name: string;
+    value: JSValueRef; fname: string; exception: ptr JSValueRef): bool =
+  ## setProp with the std modules' throw contract: direct-result
+  ## builders (no JsonNode middle layer) funnel every install through
+  ## here so a failed property write throws instead of half-building.
+  ## True on success, false + JS throw on failure.
+  var ex: JSValueRef = nil
+  setProp(ctx, obj, name, value, addr ex)
+  if ex != nil:
+    throwError(ctx, fname & ": could not convert result to JS", exception)
+    return false
+  true
+
+proc makeJSArray*(ctx: JSContextRef;
+    vals: openArray[JSValueRef]): JSValueRef =
+  ## Builds a JS array from refs. nil on creation failure; callers own
+  ## fname/exception and report the throw (same contract as the
+  ## inlined versions in yaml/toml/xml/diff/svg).
+  var ex: JSValueRef = nil
+  let arr =
+    if vals.len > 0:
+      JSObjectMakeArray(ctx, csize_t(vals.len), unsafeAddr vals[0],
+        addr ex)
+    else:
+      JSObjectMakeArray(ctx, 0, nil, addr ex)
+  if ex != nil:
+    return nil
+  arr
+
+proc optSetStr*(ctx: JSContextRef; obj: JSObjectRef; key: string;
+    v: Option[string]; fname: string;
+    exception: ptr JSValueRef): bool =
+  ## Optional string install for direct-result builders: absent
+  ## options stay absent. True on success (or absence), false + JS
+  ## throw on failure.
+  if v.isNone:
+    return true
+  setPropChecked(ctx, obj, key, toJS(ctx, v.get()), fname, exception)
+
+proc optSetInt*(ctx: JSContextRef; obj: JSObjectRef; key: string;
+    v: Option[int]; fname: string; exception: ptr JSValueRef): bool =
+  ## Optional integer install, same contract as optSetStr.
+  if v.isNone:
+    return true
+  setPropChecked(ctx, obj, key, toJS(ctx, v.get()), fname, exception)
+
 proc checkArity*(argumentCount: csize_t; wantMin, wantMax: int;
     name: string; ctx: JSContextRef;
     exception: ptr JSValueRef; usage: string = ""): bool =
@@ -229,6 +276,22 @@ proc throwTypeMismatch*(ctx: JSContextRef; fname, pname, actual, want,
     "`, expected `" & want & "`"
   throwError(ctx, msg, exception)
 
+const maxNimValueDepth = 64
+const maxNimValueArrayLen = 100_000
+
+const maxDumpDepth* = 64
+  ## Nesting cap for direct JS -> native-tree walkers (yaml, toml,
+  ## xml, ...). Same contract as the snapshot cap: anything deeper
+  ## throws instead of recursing forever on circular input.
+
+proc jsSkipped*(ctx: JSContextRef; v: JSValueRef): bool =
+  ## JSON holes for serializers: undefined, symbols, and functions are
+  ## dropped from objects and read back as null in arrays.
+  let t = JSValueGetType(ctx, v)
+  t == kJSTypeUndefined or t == kJSTypeSymbol or
+    (t == kJSTypeObject and JSObjectIsFunction(ctx, v))
+
+
 proc jsonToJS*(ctx: JSContextRef; node: JsonNode): JSValueRef =
   ## Parses $node as JSON into a fresh JS value. nil on failure
   ## (only when $node is not valid JSON, e.g. NaN payloads).
@@ -236,6 +299,44 @@ proc jsonToJS*(ctx: JSContextRef; node: JsonNode): JSValueRef =
   let jsStr = newJSString(s)
   defer: JSStringRelease(jsStr)
   JSValueMakeFromJSONString(ctx, jsStr)
+
+proc jsonNodeToJS*(ctx: JSContextRef; node: JsonNode): JSValueRef =
+  ## JsonNode -> live JS value in one walk, no string round trip
+  ## (the $stringify + JSC re-parse that jsonToJS does). nil only when
+  ## an array/object fails to install. Note: JFloat NaN/Inf becomes a
+  ## JS NaN/Infinity number; jsonToJS threw on those instead. Parsers
+  ## never produce non-finite floats, so this only matters for
+  ## hand-built trees.
+  case node.kind
+  of JNull:
+    JSValueMakeNull(ctx)
+  of JBool:
+    JSValueMakeBoolean(ctx, node.getBool())
+  of JInt:
+    JSValueMakeNumber(ctx, cdouble(node.getBiggestInt()))
+  of JFloat:
+    JSValueMakeNumber(ctx, cdouble(node.getFloat()))
+  of JString:
+    toJS(ctx, node.getStr())
+  of JArray:
+    var vals: seq[JSValueRef] = @[]
+    for item in node:
+      let j = jsonNodeToJS(ctx, item)
+      if j == nil:
+        return nil
+      vals.add(j)
+    makeJSArray(ctx, vals)
+  of JObject:
+    let obj = newObject(ctx)
+    var ex: JSValueRef = nil
+    for k, v in node.pairs:
+      let j = jsonNodeToJS(ctx, v)
+      if j == nil:
+        return nil
+      setProp(ctx, obj, k, j, addr ex)
+      if ex != nil:
+        return nil
+    obj
 
 proc jsToJson*(ctx: JSContextRef; value: JSValueRef;
     err: var string): JsonNode =
@@ -252,6 +353,114 @@ proc jsToJson*(ctx: JSContextRef; value: JSValueRef;
   except CatchableError as e:
     err = e.msg
     nil
+
+proc jsToJsonNodeImpl(ctx: JSContextRef; v: JSValueRef; depth: int;
+    err: var string): JsonNode =
+  ## One-walk JS -> JsonNode with jsToJson's observable semantics:
+  ## JSON holes (undefined/symbol/function dropped from objects, null
+  ## in arrays), bigints and circular input throw, integrals become
+  ## JInt. No string conversions anywhere.
+  if v == nil:
+    err = "is null"
+    return nil
+  if depth > maxNimValueDepth:
+    err = "is too deeply nested or circular"
+    return nil
+  if jsSkipped(ctx, v):
+    err = "value is not JSON-serializable"
+    return nil
+  case JSValueGetType(ctx, v)
+  of kJSTypeNull:
+    result = newJNull()
+  of kJSTypeBoolean:
+    result = %JSValueToBoolean(ctx, v)
+  of kJSTypeNumber:
+    var ex: JSValueRef = nil
+    let f = JSValueToNumber(ctx, v, addr ex)
+    if ex != nil:
+      err = "is not a number"
+      return nil
+    if f == trunc(f) and abs(f) < 9223372036854775808.0:
+      result = %int64(f)
+    else:
+      result = %f
+  of kJSTypeString:
+    var ex: JSValueRef = nil
+    let s = JSValueToStringCopy(ctx, v, addr ex)
+    if s == nil:
+      err = "is not convertible to string"
+      return nil
+    defer: JSStringRelease(s)
+    result = %($s)
+  of kJSTypeBigInt:
+    err = "value is not JSON-serializable"
+    return nil
+  of kJSTypeUndefined, kJSTypeSymbol:
+    err = "value is not JSON-serializable"
+    return nil
+  of kJSTypeObject:
+    if JSValueIsArray(ctx, v):
+      var ex: JSValueRef = nil
+      let lenKey = newJSString("length")
+      defer: JSStringRelease(lenKey)
+      let lenV = JSObjectGetProperty(ctx, v, lenKey, addr ex)
+      if ex != nil or lenV == nil:
+        err = "has an unreadable length"
+        return nil
+      var ex2: JSValueRef = nil
+      let n = int(JSValueToNumber(ctx, lenV, addr ex2))
+      if ex2 != nil or n < 0:
+        err = "has an unreadable length"
+        return nil
+      result = newJArray()
+      for idx in 0 ..< n:
+        var eEx: JSValueRef = nil
+        let item = JSObjectGetPropertyAtIndex(ctx, v, cuint(idx),
+          addr eEx)
+        if eEx != nil or item == nil:
+          err = "has an unreadable index " & $idx
+          return nil
+        if jsSkipped(ctx, item):
+          result.add(newJNull())
+        else:
+          let nv = jsToJsonNodeImpl(ctx, item, depth + 1, err)
+          if err != "":
+            return nil
+          result.add(nv)
+    elif JSObjectIsFunction(ctx, v):
+      err = "value is not JSON-serializable"
+      return nil
+    else:
+      let names = JSObjectCopyPropertyNames(ctx, v)
+      if names == nil:
+        err = "has unreadable properties"
+        return nil
+      defer: JSPropertyNameArrayRelease(names)
+      result = newJObject()
+      let count = int(JSPropertyNameArrayGetCount(names))
+      for idx in 0 ..< count:
+        let jsName =
+          JSPropertyNameArrayGetNameAtIndex(names, csize_t(idx))
+        let key = $jsName
+        var pEx: JSValueRef = nil
+        let prop = JSObjectGetProperty(ctx, v, jsName, addr pEx)
+        if pEx != nil or prop == nil:
+          err = "has an unreadable property \"" & key & "\""
+          return nil
+        if jsSkipped(ctx, prop):
+          continue
+        let nv = jsToJsonNodeImpl(ctx, prop, depth + 1, err)
+        if err != "":
+          return nil
+        result[key] = nv
+
+proc jsToJsonNode*(ctx: JSContextRef; value: JSValueRef;
+    err: var string): JsonNode =
+  ## Direct JS -> JsonNode without the stringify + re-parse round
+  ## trip. Same contract as jsToJson: JsonNode + "" on success, nil +
+  ## err message on failure.
+  err = ""
+  jsToJsonNodeImpl(ctx, value, 0, err)
 
 proc returnJson*(ctx: JSContextRef; node: JsonNode; name: string;
     exception: ptr JSValueRef): JSValueRef =
@@ -325,9 +534,6 @@ type
     of nvkArray: arr*: seq[NimValue]
     of nvkObject: obj*: OrderedTable[string, NimValue]
     of nvkFunction, nvkSymbol, nvkBigInt: raw*: JSValueRef
-
-const maxNimValueDepth = 64
-const maxNimValueArrayLen = 100_000
 
 proc jsTypeName*(kind: NimValueKind): string =
   ## JS-style type name for error messages.

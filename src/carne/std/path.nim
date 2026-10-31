@@ -10,7 +10,7 @@
 #
 # Parse-only in v1. Absent options stay absent.
 
-import std/[json, options, strutils]
+import std/[options, strutils]
 
 import javascriptcore
 
@@ -18,41 +18,85 @@ import pkg/openparser/path
 
 import ../bridge
 
-proc optStr(obj: JsonNode; key: string; v: Option[string]) =
-  if v.isSome:
-    obj[key] = %v.get()
 
-proc pathToJson(p: Path): JsonNode =
-  result = newJObject()
-  result["kind"] = %($p.kind)[2 .. ^1].toLowerAscii()
+proc pathToJS(ctx: JSContextRef; p: Path; fname: string;
+    exception: ptr JSValueRef): JSValueRef =
+  let obj = newObject(ctx)
+  if not setPropChecked(ctx, obj, "kind",
+      toJS(ctx, ($p.kind)[2 .. ^1].toLowerAscii()), fname, exception):
+    return nil
   if p.isLocal:
-    optStr(result, "drive", p.drive)
-    result["absolute"] = %p.isAbsolute
-    var segs = newJArray()
+    if not optSetStr(ctx, obj, "drive", p.drive, fname, exception):
+      return nil
+    if not setPropChecked(ctx, obj, "absolute", toJS(ctx, p.isAbsolute),
+        fname, exception):
+      return nil
+    var svals: seq[JSValueRef] = @[]
     for s in p.segments:
-      segs.add(%s)
-    result["segments"] = segs
-    optStr(result, "ext", p.localExt)
+      svals.add(toJS(ctx, s))
+    let segs = makeJSArray(ctx, svals)
+    if segs == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "segments", segs, fname, exception):
+      return nil
+    if not optSetStr(ctx, obj, "ext", p.localExt, fname, exception):
+      return nil
   else:
-    result["scheme"] = %p.scheme
+    if not setPropChecked(ctx, obj, "scheme", toJS(ctx, p.scheme),
+        fname, exception):
+      return nil
     if p.auth.isSome:
       let a = p.auth.get()
-      result["user"] = %a.user
-      optStr(result, "password", a.password)
-    result["host"] = %p.host
+      if not setPropChecked(ctx, obj, "user", toJS(ctx, a.user), fname,
+          exception):
+        return nil
+      if not optSetStr(ctx, obj, "password", a.password, fname,
+          exception):
+        return nil
+    if not setPropChecked(ctx, obj, "host", toJS(ctx, p.host), fname,
+        exception):
+      return nil
     if p.port.isSome:
-      result["port"] = %p.port.get()
-    result["path"] = %p.path
-    var segs = newJArray()
+      if not setPropChecked(ctx, obj, "port", toJS(ctx, p.port.get()),
+          fname, exception):
+        return nil
+    if not setPropChecked(ctx, obj, "path", toJS(ctx, p.path), fname,
+        exception):
+      return nil
+    var svals: seq[JSValueRef] = @[]
     for s in p.pathSegments:
-      segs.add(%s)
-    result["segments"] = segs
-    var q = newJArray()
+      svals.add(toJS(ctx, s))
+    let segs = makeJSArray(ctx, svals)
+    if segs == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "segments", segs, fname, exception):
+      return nil
+    var qvals: seq[JSValueRef] = @[]
     for param in p.query:
-      q.add(%*{"key": param.key, "value": param.value})
-    result["query"] = q
-    optStr(result, "fragment", p.fragment)
-    optStr(result, "ext", p.ext)
+      let qobj = newObject(ctx)
+      if not setPropChecked(ctx, qobj, "key", toJS(ctx, param.key),
+          fname, exception):
+        return nil
+      if not setPropChecked(ctx, qobj, "value", toJS(ctx, param.value),
+          fname, exception):
+        return nil
+      qvals.add(qobj)
+    let q = makeJSArray(ctx, qvals)
+    if q == nil:
+      throwError(ctx, fname & ": could not convert result to JS",
+        exception)
+      return nil
+    if not setPropChecked(ctx, obj, "query", q, fname, exception):
+      return nil
+    if not optSetStr(ctx, obj, "fragment", p.fragment, fname, exception):
+      return nil
+    if not optSetStr(ctx, obj, "ext", p.ext, fname, exception):
+      return nil
+  obj
 
 ## Builds the std/path namespace object.
 init proc(module: Module) =
@@ -61,7 +105,12 @@ init proc(module: Module) =
     module.registerFn parse(text: string):
       ## path.parse(text) -> local or network path object
       try:
-        returnJson(ctx, pathToJson(parsePath(text)), "parse", exception)
+        let j = pathToJS(ctx, parsePath(text), "parse", exception)
+        if j == nil:
+          throwError(ctx, "parse: could not convert result to JS",
+            exception)
+          return nil
+        j
       except CatchableError as e:
         throwError(ctx, "parse: " & e.msg, exception)
         nil
