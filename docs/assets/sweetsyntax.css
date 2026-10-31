@@ -132,7 +132,7 @@ pre code:has(> .code-line) {
   counter-reset: code-line;
 }
 pre code .code-line {
-  display: inline-block;
+  display: block;
   counter-increment: code-line;
 }
 pre code .code-line::before {
