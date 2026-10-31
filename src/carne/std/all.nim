@@ -25,7 +25,6 @@ import ./colors
 import ./css
 import ./diff
 import ./gettext
-import ./regex
 import ./mimetype
 import ./benchmark
 import ./qr
@@ -53,7 +52,6 @@ registerStd("std/colors", colors.install)
 registerStd("std/css", css.install)
 registerStd("std/diff", diff.install)
 registerStd("std/gettext", gettext.install)
-registerStd("std/regex", regex.install)
 registerStd("std/mimetype", mimetype.install)
 registerStd("std/benchmark", benchmark.install)
 registerStd("std/qr", qr.install)

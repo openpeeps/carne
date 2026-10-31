@@ -408,18 +408,6 @@ console.log(gettext.ntranslate(po, "file", "files", 2));
 console.log(gettext.parse(po).entries.length);
 ```
 
-### `std/regex`
-
-Server-side regular expressions. Same engine/semantics as Nim code using openparser. `exec` returns
-`null` on no match.
-
-```js
-const regex = require("std/regex");
-console.log(regex.test("\\d+", "abc123")); // true (search semantics)
-console.log(regex.exec("(\\w+)@(\\w+)", "mail ada@x.io").match); // "ada@x"
-console.log(regex.matchAll("a+", "aa b aaa").length); // 2
-```
-
 ### `std/mimetype`
 
 MIME type lookup over the `mimedb` database (bundled, parsed lazily on first query).
@@ -599,7 +587,7 @@ console.log(uuid.isValid("nope"), uuid.isNil(uuid.NIL)); // false true
 - [x] Package management (`carne pkg`, manifests)
 - [x] Format std libs (yaml, toml, ical, dotenv, plist, bson, csv, xml, vcard, feed)
 - [x] `std/sql`, `std/crypto`, `std/path`, `std/colors`
-- [x] `std/css`, `std/diff`, `std/gettext`, `std/regex`, `std/mimetype`, `std/benchmark`, `std/qr`, `std/svg`
+- [x] `std/css`, `std/diff`, `std/gettext`, `std/mimetype`, `std/benchmark`, `std/qr`, `std/svg`
 - [x] `std/http` (async client + server, tuning opts, method helpers) + top-level promise unwrap in `runCode`
 - [x] `std/ws` (async + sync client, server, binary/ping/protocol, `wss://` client)
 - [x] `std/http` workers (cluster-style threads, `process.isWorker`)

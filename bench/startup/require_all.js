@@ -17,7 +17,6 @@ require("std/colors");
 require("std/css");
 require("std/diff");
 require("std/gettext");
-require("std/regex");
 require("std/mimetype");
 require("std/benchmark");
 require("std/qr");
